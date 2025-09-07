@@ -48,35 +48,43 @@ def parse_range_input(user_input, data_len):
     except Exception:
         return None
 
-# Ask user how many sets to test
+# Initialize to avoid undefined warnings
+start_idx = None
+end_idx = None
+# Ask user how many sets to test (0 for all, 00 to exit, N for first N, start-end for a range)
 while True:
-    try:
-        user_input = input("How many sets should be tested? (0 for all, or enter a number): ").strip()
-        num_sets = int(user_input)
-        if num_sets < 0:
-            print("Please enter 0 or a positive integer.")
-            continue
+    user_input = input("How many sets should be tested? (0 for all, 00 to exit, N for first N, start-end for a range): ").strip()
+    if user_input == "00":
+        print("Exiting program.")
+        exit(0)
+    if user_input == "0":
+        start_idx, end_idx = 0, len(hub_data)
+        print(f"Running ALL {end_idx} tests from harmfuldataset.json...")
         break
-    except ValueError:
-        print("Invalid input. Please enter 0 or a positive integer.")
-
-# Select the subset of data to test
-if num_sets == 0:
-    selected_data = hub_data
-    print(f"Running ALL {len(selected_data)} tests from harmfuldataset.json...")
-else:
-    selected_data = hub_data[:num_sets]
-    print(f"Running {len(selected_data)} tests from harmfuldataset.json...")
-
-# Ask user for test range
-while True:
-    user_input = input("Enter test range (0 for all, N for first N, start-end for a range): ").strip()
-    parsed = parse_range_input(user_input, len(hub_data))
-    if parsed is None:
-        print("Invalid input. Please enter 0, a positive integer, or a valid range like 10-20.")
+    if "-" in user_input:
+        parsed = parse_range_input(user_input, len(hub_data))
+        if parsed is None:
+            print("Invalid range. Please enter 0, 00, a positive integer, or a valid range like 10-20.")
+            continue
+        start_idx, end_idx = parsed
+        print(f"Running tests {start_idx} to {end_idx-1} from harmfuldataset.json...")
+        break
+    try:
+        n = int(user_input)
+        if n <= 0 or n > len(hub_data):
+            print(f"Please enter 0, 00, or a number between 1 and {len(hub_data)}.")
+            continue
+        start_idx, end_idx = 0, n
+        print(f"Running first {n} tests from harmfuldataset.json...")
+        break
+    except Exception:
+        print(f"Invalid input. Please enter 0, 00, a positive integer, or a valid range like 10-20.")
         continue
-    start_idx, end_idx = parsed
-    break
+
+# Ensure indices are set before using
+if start_idx is None or end_idx is None:
+    print("Error: Test range not set. Exiting.")
+    exit(1)
 
 selected_data = hub_data[start_idx:end_idx]
 if start_idx == 0 and end_idx == len(hub_data):
