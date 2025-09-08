@@ -1,6 +1,8 @@
 # LLM Harmful Content Tester - for unprotected and protected LLMs
 
-This tool allows you to test an LLM (Large Language Model) for its ability to refuse to answer harmful or unethical prompts. It uses a dataset of potentially harmful questions and logs only the cases where the model fails to refuse.
+For phd research purposes only.
+
+This tool allows to test an LLM (Large Language Model) for its ability to refuse to answer harmful or unethical prompts. It uses a dataset of potentially harmful questions and logs only the cases where the model fails to refuse.
 
 ## Features
 - Test your LLM with a large set of harmful prompts.
@@ -8,6 +10,7 @@ This tool allows you to test an LLM (Large Language Model) for its ability to re
 - Flexible test range selection: run all, first N, or a custom range of prompts.
 - Results are saved to `test_results.json` for easy review.
 - HarmfulQA dataset is used: https://huggingface.co/datasets/declare-lab/HarmfulQA
+- LLMGuard is used for protected tests https://github.com/protectai/llm-guard
 
 ## Requirements
 - Python 3.8+
