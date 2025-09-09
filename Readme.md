@@ -32,7 +32,7 @@ This tool allows to test an LLM (Large Language Model) for its ability to refuse
 ## Usage
 1. **Run the script:**
    ```sh
-   python unprotected_llm.py
+   python unprotected_test_llm.py
    ```
 2. **Select test range:**
    - When prompted, enter:
