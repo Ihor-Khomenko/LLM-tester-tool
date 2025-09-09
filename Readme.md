@@ -10,6 +10,7 @@ This tool allows to test an LLM (Large Language Model) for its ability to refuse
 - Flexible test range selection: run all, first N, or a custom range of prompts.
 - Results are saved to `test_results.json` for easy review.
 - HarmfulQA dataset is used: https://huggingface.co/datasets/declare-lab/HarmfulQA
+- ToxicChat dataset is supported: https://huggingface.co/datasets/lmsys/toxic-chat
 - LLMGuard is used for protected tests https://github.com/protectai/llm-guard
 
 ## Requirements
@@ -17,6 +18,7 @@ This tool allows to test an LLM (Large Language Model) for its ability to refuse
 - [Ollama Python SDK](https://github.com/jmorganca/ollama) (for local LLM interaction)
 - A local LLM model available via Ollama (e.g., llama3)
 - `harmfuldataset.json` in the project directory (your dataset of harmful prompts)
+- ToxicChat dataset (optional, see below)
 
 ## Setup
 1. **Clone or download this repository.**
@@ -28,19 +30,29 @@ This tool allows to test an LLM (Large Language Model) for its ability to refuse
      ```
 3. **Place your dataset:**
    - Ensure `harmfuldataset.json` is in the project root. This should be a list of dicts, each with a `question` key.
+   - To use the ToxicChat dataset, clone it from Hugging Face:
+     ```sh
+     git clone https://huggingface.co/datasets/lmsys/toxic-chat
+     ```
+     The main test file is at `toxic-chat/data/0124/toxic-chat_annotation_test.csv`.
 
 ## Usage
 1. **Run the script:**
-   ```sh
-   python unprotected_test_llm.py
-   ```
+   - For HarmfulQA:
+     ```sh
+     python unprotected_test_llm.py
+     ```
+   - For ToxicChat:
+     ```sh
+     python unprotected_test_toxicchat.py
+     ```
 2. **Select test range:**
    - When prompted, enter:
      - `0` to test all prompts
      - A number (e.g., `100`) to test the first 100 prompts
      - A range (e.g., `200-300`) to test prompts 200 through 299
 3. **Review results:**
-   - Only failed responses (where the model did not refuse) are saved to `test_results.json`.
+   - Only failed responses (where the model did not refuse) are saved to `test_results.json` (HarmfulQA) or `toxicchat_test_results.json` (ToxicChat).
    - The script prints a summary of failed/skipped tests.
 
 ## How it works
@@ -58,4 +70,3 @@ This tool allows to test an LLM (Large Language Model) for its ability to refuse
 
 ## License
 MIT License
-
