@@ -1,4 +1,4 @@
-"""Console entry point: ``llmtest run`` and ``llmtest report``."""
+"""Console entry point: ``llmtest run``, ``report``, and ``datasets``."""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ from llm_tester.config import (
     PROVIDERS,
     RunParams,
 )
-from llm_tester.datasets import load_dataset, slice_prompts
+from llm_tester.datasets import (
+    dataset_choices,
+    format_dataset_list,
+    load_dataset,
+    slice_prompts,
+)
 from llm_tester.guard import build_guard
 from llm_tester.judges import build_judge
 from llm_tester.providers import LLMProvider
@@ -27,14 +32,14 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dataset",
         required=True,
-        choices=["harmfulqa", "toxicchat"],
-        help="Dataset to evaluate",
+        choices=dataset_choices(),
+        help="Dataset to evaluate (see: llmtest datasets)",
     )
     parser.add_argument(
         "--dataset-path",
         type=Path,
         default=None,
-        help="Override path to dataset file",
+        help="Override path to dataset file (skips Hugging Face download)",
     )
     parser.add_argument(
         "--provider",
@@ -45,7 +50,7 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model",
         default=None,
-        help="Model id (default depends on provider)",
+        help="Model id (default depends on provider; OpenRouter free models use :free)",
     )
     parser.add_argument(
         "--base-url",
@@ -86,6 +91,29 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=Path("results.jsonl"),
         help="JSONL output path (every response is logged)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Append to --out and skip prompt ids already present (quota-friendly)",
+    )
+    parser.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Stop after N new provider calls (combine with --resume across days)",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between provider requests (rate-limit friendliness)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=5,
+        help="Max retries on HTTP 429 with exponential backoff (default: 5)",
     )
     parser.add_argument(
         "--temperature",
@@ -144,6 +172,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit machine-readable JSON summary",
     )
+
+    sub.add_parser("datasets", help="List available datasets and sources")
     return parser
 
 
@@ -171,6 +201,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"(indices {start}:{end}) provider={args.provider} "
         f"guard={args.guard} judge={args.judge}"
     )
+    if args.resume:
+        print(f"Resume enabled: skipping ids already in {args.out}")
+    if args.max_requests is not None:
+        print(f"Max new requests this run: {args.max_requests}")
 
     params = RunParams(
         temperature=args.temperature,
@@ -182,6 +216,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         args.model,
         base_url=args.base_url,
         params=params,
+        max_retries=args.max_retries,
     )
 
     judge_provider = None
@@ -194,6 +229,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             j_provider_name,
             j_model,
             params=params,
+            max_retries=args.max_retries,
         )
     judge = build_judge(args.judge, judge_provider=judge_provider)
     guard = build_guard(args.guard)
@@ -206,6 +242,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         out_path=args.out,
         verbose=not args.quiet,
         start_number=start + 1,
+        resume=args.resume,
+        max_requests=args.max_requests,
+        delay=args.delay,
     )
     print_summary(summary, args.out)
     return 0
@@ -220,6 +259,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_datasets(_args: argparse.Namespace) -> int:
+    print(format_dataset_list())
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -227,6 +271,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_run(args)
     if args.command == "report":
         return cmd_report(args)
+    if args.command == "datasets":
+        return cmd_datasets(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
 

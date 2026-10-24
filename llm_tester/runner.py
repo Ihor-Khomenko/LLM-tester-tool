@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, TextIO
+from typing import Any, Dict, Iterable, List, Optional, Set, TextIO
 
 from llm_tester.datasets import PromptItem
 from llm_tester.guard import NoGuard
@@ -55,15 +56,18 @@ class TestRecord:
 class RunSummary:
     total: int = 0
     skipped: int = 0
+    resumed_skipped: int = 0
     errors: int = 0
     refusals: int = 0
     attack_successes: int = 0
     blocked: int = 0
+    requests: int = 0
+    stopped_max_requests: bool = False
     latencies: List[float] = field(default_factory=list)
 
     @property
     def evaluated(self) -> int:
-        return self.total - self.skipped - self.errors
+        return self.total - self.skipped - self.errors - self.resumed_skipped
 
     @property
     def refusal_rate(self) -> Optional[float]:
@@ -81,10 +85,11 @@ class RunSummary:
 
 
 class JSONLWriter:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, append: bool = False) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh: TextIO = open(self.path, "w", encoding="utf-8")
+        mode = "a" if append else "w"
+        self._fh: TextIO = open(self.path, mode, encoding="utf-8")
 
     def write(self, record: TestRecord) -> None:
         self._fh.write(json.dumps(record.to_dict(), ensure_ascii=False) + "\n")
@@ -100,6 +105,26 @@ class JSONLWriter:
         self.close()
 
 
+def load_completed_ids(path: Path) -> Set[str]:
+    """Return prompt ids already present in a JSONL results file."""
+    done: Set[str] = set()
+    if not path.exists():
+        return done
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            pid = rec.get("id")
+            if pid is not None:
+                done.add(str(pid))
+    return done
+
+
 def run_evaluation(
     prompts: Iterable[PromptItem],
     provider: LLMProvider,
@@ -109,13 +134,26 @@ def run_evaluation(
     out_path: Optional[Path] = None,
     verbose: bool = True,
     start_number: int = 1,
+    resume: bool = False,
+    max_requests: Optional[int] = None,
+    delay: float = 0.0,
 ) -> RunSummary:
-    """Run prompts against provider; log every response to JSONL when out_path set."""
+    """Run prompts against provider; log every response to JSONL when out_path set.
+
+    When ``resume`` is True and ``out_path`` exists, prompt ids already logged are
+    skipped and new rows are appended. ``max_requests`` caps new provider calls
+    so daily quotas can be spread across runs. ``delay`` sleeps between calls.
+    """
     judge = judge or PhraseJudge()
     guard = guard or NoGuard()
     summary = RunSummary()
-    writer: Optional[JSONLWriter] = JSONLWriter(out_path) if out_path else None
+    out = Path(out_path) if out_path else None
+    completed: Set[str] = load_completed_ids(out) if resume and out else set()
+    writer: Optional[JSONLWriter] = None
+    if out:
+        writer = JSONLWriter(out, append=bool(resume and out.exists()))
     info = provider.info()
+    made_request = False
 
     try:
         for offset, item in enumerate(prompts):
@@ -128,6 +166,25 @@ def run_evaluation(
                 continue
 
             summary.total += 1
+
+            if item.id in completed:
+                summary.resumed_skipped += 1
+                if verbose:
+                    print(f"Resume skip {test_number}: id={item.id} already in {out}")
+                continue
+
+            if max_requests is not None and summary.requests >= max_requests:
+                summary.stopped_max_requests = True
+                if verbose:
+                    print(
+                        f"Reached --max-requests={max_requests}; "
+                        f"stopping (resume later with the same --out)."
+                    )
+                break
+
+            if delay > 0 and made_request:
+                time.sleep(delay)
+
             record = TestRecord(
                 test_number=test_number,
                 id=item.id,
@@ -163,6 +220,8 @@ def run_evaluation(
                     summary.refusals += 1
                 else:
                     chat = provider.chat(g_in.sanitized_prompt)
+                    summary.requests += 1
+                    made_request = True
                     record.latency_s = chat.latency_s
                     summary.latencies.append(chat.latency_s)
 
@@ -208,6 +267,7 @@ def run_evaluation(
 
             if writer:
                 writer.write(record)
+                completed.add(item.id)
     finally:
         if writer:
             writer.close()
@@ -216,7 +276,9 @@ def run_evaluation(
 
 
 def print_summary(summary: RunSummary, out_path: Optional[Path] = None) -> None:
-    print(f"\nSkipped {summary.skipped} items.")
+    print(f"\nSkipped (empty): {summary.skipped}")
+    print(f"Skipped (resume): {summary.resumed_skipped}")
+    print(f"Provider requests: {summary.requests}")
     print(f"Errors: {summary.errors}")
     print(f"Blocked (guard): {summary.blocked}")
     print(f"Refusals: {summary.refusals}")
@@ -227,5 +289,7 @@ def print_summary(summary: RunSummary, out_path: Optional[Path] = None) -> None:
         print(f"Attack success rate: {summary.attack_success_rate:.2%}")
     if summary.mean_latency_s is not None:
         print(f"Mean latency: {summary.mean_latency_s:.3f}s")
+    if summary.stopped_max_requests:
+        print("Stopped early due to --max-requests (re-run with --resume to continue).")
     if out_path:
         print(f"All results logged to {out_path}")

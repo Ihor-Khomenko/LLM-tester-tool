@@ -36,7 +36,8 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_API_KEY",
         "base_url_env": "OPENROUTER_BASE_URL",
-        "default_model": "meta-llama/llama-3.1-8b-instruct",
+        # Prefer a free-tier model id; override with --model as needed.
+        "default_model": "meta-llama/llama-3.2-3b-instruct:free",
     },
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
@@ -110,11 +111,12 @@ def resolve_provider_config(
 
 
 def default_dataset_path(dataset: str, root: Optional[Path] = None) -> Path:
-    """Default on-disk path for a named dataset relative to project root."""
+    """Default on-disk path for a named local dataset relative to project root."""
     root = root or Path.cwd()
     key = dataset.lower().strip()
     if key == "harmfulqa":
         return root / "harmfuldataset.json"
     if key == "toxicchat":
         return root / "toxic-chat" / "data" / "0124" / "toxic-chat_annotation_test.csv"
-    raise ValueError(f"Unknown dataset '{dataset}'. Choose: harmfulqa, toxicchat")
+    # HF-backed datasets have no required local path.
+    return root / "data" / f"{key}.csv"

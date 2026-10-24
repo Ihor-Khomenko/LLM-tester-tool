@@ -12,6 +12,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 .env
+.cache/
 *.jsonl
 test_results.json
 toxicchat_test_results.json

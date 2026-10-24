@@ -18,6 +18,15 @@ def test_cli_report(tmp_path: Path, capsys):
     assert "Refusal rate" in out
 
 
+def test_cli_datasets(capsys):
+    rc = main(["datasets"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "advbench" in out
+    assert "promptinject" in out
+    assert "jailbreakbench" in out
+
+
 def test_cli_run_with_mocks(tmp_path: Path):
     dataset = tmp_path / "hq.json"
     dataset.write_text(

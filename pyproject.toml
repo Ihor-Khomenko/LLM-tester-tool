@@ -13,12 +13,14 @@ authors = [{ name = "PhD research" }]
 dependencies = [
     "openai>=1.40.0",
     "python-dotenv>=1.0.0",
+    "datasets>=2.14.0",
 ]
 
 [project.optional-dependencies]
 guard = ["llm-guard"]
+datasets = ["datasets>=2.14.0"]
 dev = ["pytest>=7.0"]
-all = ["llm-guard", "pytest>=7.0"]
+all = ["llm-guard", "datasets>=2.14.0", "pytest>=7.0"]
 
 [project.scripts]
 llmtest = "llm_tester.cli:main"
@@ -29,3 +31,7 @@ include = ["llm_tester*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Tests must stay offline — see tests/conftest.py network guard.
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

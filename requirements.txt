@@ -2,5 +2,6 @@
 # Kept for convenience / older workflows.
 openai>=1.40.0
 python-dotenv>=1.0.0
+datasets>=2.14.0
 llm-guard
 pytest>=7.0
