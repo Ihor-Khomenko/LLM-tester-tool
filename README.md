@@ -240,13 +240,17 @@ Simple ReAct-style tool agent (toy local tools) with/without the guard. Uses the
 
 ```sh
 llmtest agent-bench --provider ollama --model qwen2.5:7b \
-  --max-requests 20 --resume --out agent_bench.jsonl
+  --suite builtin --max-requests 20 --delay 1 --max-retries 1 \
+  --resume --out agent_bench.jsonl
 llmtest agent-bench --provider openrouter \
-  --model meta-llama/llama-3.2-3b-instruct:free \
-  --enable-s4 --max-requests 40 --resume --out agent_or.jsonl
+  --model nvidia/nemotron-3.5-lightning:free \
+  --suite msr --scenarios-path scenarios.jsonl \
+  --max-requests 40 --delay 2 --max-retries 1 --resume --out agent_or.jsonl
 llmtest agent-bench --provider ollama --model qwen2.5:7b --without-guard \
-  --max-requests 20 --resume --out agent_bench_raw.jsonl
+  --suite builtin --max-requests 20 --resume --out agent_bench_raw.jsonl
 ```
+
+`--max-retries` defaults to **1** (avoid burning free-tier quota on 429). stderr logs `provider_requests_used`. Suites: `builtin` (benign+attack), `msr`/`jsonl`, `injecagent`, `agentdojo` (scaffold).
 
 ### MCP stdio proxy
 
