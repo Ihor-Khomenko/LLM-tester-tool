@@ -396,7 +396,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.5,
         help="Fraction of groups used for threshold search",
     )
-    gc.add_argument("--seed", type=int, default=0)
+    gc.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Base seed (or sole seed when --seeds/--n-seeds unset)",
+    )
+    gc.add_argument(
+        "--seeds",
+        default=None,
+        help="Comma-separated seeds for repeated calibration (e.g. 0,1,2,3,4)",
+    )
+    gc.add_argument(
+        "--n-seeds",
+        type=int,
+        default=None,
+        help="Run N calibrations with seeds seed..seed+N-1; report mean±95%% CI",
+    )
     gc.add_argument(
         "--objective",
         default="youden",
@@ -415,7 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional JSON mirror of calibration result (also written under --run-dir)",
     )
-    gc.add_argument("--json", action="store_true", help="Print full result JSON")
+    gc.add_argument("--json", action="store_true", help="Print full result JSON only on stdout")
     add_run_dir_args(gc, default_name_help="guard-calibrate_<dataset>")
 
     sp = sub.add_parser(
@@ -605,10 +621,15 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
     # Prefer run-dir log when --log not set.
     log_path = args.log
     if log_path is None:
-        log_path = run_dir / "sentinel_decisions.jsonl"
+        log_path = run_dir / "sentinel_decisions.jsonl.gz"
 
     guard = build_sentinel(policy=policy, llm_provider=llm, log_path=log_path)
-    metrics, records = evaluate_traces(traces, guard, collect_records=True)
+    try:
+        metrics, records = evaluate_traces(traces, guard, collect_records=True)
+    finally:
+        # Finalize gzip decision log (CRC trailer) when using .jsonl.gz.
+        if getattr(guard, "logger", None) is not None:
+            guard.logger.close()
 
     with open_results_writer(run_dir, append=False) as writer:
         for rec in records:
@@ -675,7 +696,11 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_guard_calibrate(args: argparse.Namespace) -> int:
-    from llm_tester.agent.calibrate import run_calibration, write_calibration_report
+    from llm_tester.agent.calibrate import (
+        parse_seeds_arg,
+        run_calibration_multi_seed,
+        write_calibration_report,
+    )
     from llm_tester.agent.traces import TraceSchemaError, resolve_traces
     from llm_tester.sentinel.policy import load_policy
 
@@ -700,6 +725,14 @@ def cmd_guard_calibrate(args: argparse.Namespace) -> int:
         print("Need at least 4 traces to calibrate.", file=sys.stderr)
         return 1
 
+    try:
+        seeds = parse_seeds_arg(
+            args.seeds, seed=args.seed, n_seeds=args.n_seeds
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     run_dir = prepare_run_dir(
         args,
         "guard-calibrate",
@@ -708,12 +741,12 @@ def cmd_guard_calibrate(args: argparse.Namespace) -> int:
 
     policy = load_policy(args.policy)
     policy.enable_s4 = False
-    result = run_calibration(
+    result = run_calibration_multi_seed(
         traces,
+        seeds=seeds,
         base_policy=policy,
         strategy=args.split_by,
         train_frac=args.train_frac,
-        seed=args.seed,
         objective=args.objective,
         max_fpr=args.max_fpr,
     )
@@ -726,6 +759,8 @@ def cmd_guard_calibrate(args: argparse.Namespace) -> int:
     metrics_dict["dataset"] = args.dataset
     metrics_dict["train_metrics"] = result["train_metrics"]
     metrics_dict["calibrated_policy"] = result["calibrated_policy"]
+    metrics_dict["seeds"] = result["seeds"]
+    metrics_dict["heldout_aggregate"] = result.get("heldout_aggregate")
 
     config: Dict[str, Any] = {
         "command": "guard-calibrate",
@@ -735,9 +770,11 @@ def cmd_guard_calibrate(args: argparse.Namespace) -> int:
         "policy": str(args.policy) if args.policy else None,
         "objective": args.objective,
         "max_fpr": args.max_fpr,
+        "seeds": result["seeds"],
         "split": result["split"],
         "calibrated_policy": result["calibrated_policy"],
         "search": result.get("search"),
+        "heldout_aggregate": result.get("heldout_aggregate"),
     }
     finalize_run_dir(
         run_dir,
@@ -747,34 +784,26 @@ def cmd_guard_calibrate(args: argparse.Namespace) -> int:
         argv=sys.argv[1:],
         extra_sha=parse_extra_sha(args.extra_sha),
     )
-    print(f"Run artefacts written to {run_dir}")
+    # Status always on stderr so --json stdout is pure JSON.
+    print(f"Run artefacts written to {run_dir}", file=sys.stderr)
 
     if args.json:
         printable = {
             k: v
             for k, v in result.items()
-            if k not in ("train_report", "heldout_report")
+            if k not in ("train_report", "heldout_report", "aggregate_report")
         }
         print(json.dumps(printable, indent=2))
     else:
-        split = result["split"]
-        cal = result["calibrated_policy"]
         print(
             f"=== guard-calibrate dataset={args.dataset} "
-            f"split_by={split['strategy']} seed={split['seed']} ==="
+            f"split_by={args.split_by} seeds={result['seeds']} ==="
         )
-        print(
-            f"train_n={len(split['train_ids'])} "
-            f"heldout_n={len(split['heldout_ids'])} "
-            f"train_frac={split['train_frac']}"
-        )
-        print(
-            f"calibrated tau_low={cal['tau_low']} tau_high={cal['tau_high']} "
-            f"aggregation={cal['risk_aggregation']}"
-        )
+        if result.get("aggregate_report"):
+            print(result["aggregate_report"])
         print(result["train_report"])
         print(result["heldout_report"])
-        print(f"\nWrote split + metrics to {out_path}")
+        print(f"\nWrote split + metrics to {out_path}", file=sys.stderr)
         print(
             "Note: thresholds tuned on train only; held-out numbers are the "
             "unbiased estimate. Preliminary — not published results."

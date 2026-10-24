@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 import random
+import statistics
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -14,6 +16,18 @@ from llm_tester.agent.eval import EvalMetrics, evaluate_traces, format_metrics
 from llm_tester.agent.traces import TraceStep
 from llm_tester.sentinel.guard import build_sentinel
 from llm_tester.sentinel.policy import SentinelPolicy, merge_policy
+
+# Scalar held-out metrics aggregated across seeds.
+_CI_METRIC_KEYS = (
+    "tpr",
+    "fpr",
+    "f1",
+    "precision",
+    "recall",
+    "asr_with_guard",
+    "asr_reduction",
+    "escalation_rate",
+)
 
 
 @dataclass
@@ -245,3 +259,185 @@ def write_calibration_report(result: Dict[str, Any], path: Path) -> None:
         if k not in ("train_report", "heldout_report")
     }
     path.write_text(json.dumps(serializable, indent=2), encoding="utf-8")
+
+
+def _nested_get(d: Dict[str, Any], *keys: str) -> Optional[float]:
+    cur: Any = d
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return None
+        cur = cur[k]
+    if isinstance(cur, (int, float)):
+        return float(cur)
+    return None
+
+
+def _mean_ci95(values: Sequence[float]) -> Dict[str, Optional[float]]:
+    """Sample mean and 95% CI (normal approx; t for small n via 1.96≈z)."""
+    xs = [float(v) for v in values if v is not None]
+    if not xs:
+        return {"n": 0, "mean": None, "std": None, "ci95_low": None, "ci95_high": None}
+    n = len(xs)
+    mean = statistics.mean(xs)
+    if n == 1:
+        return {
+            "n": 1,
+            "mean": mean,
+            "std": 0.0,
+            "ci95_low": mean,
+            "ci95_high": mean,
+        }
+    std = statistics.stdev(xs)
+    # Student-t critical values for common small n (two-sided 95%).
+    t_crit = {
+        2: 12.706,
+        3: 4.303,
+        4: 3.182,
+        5: 2.776,
+        6: 2.571,
+        7: 2.447,
+        8: 2.365,
+        9: 2.306,
+        10: 2.262,
+    }.get(n, 1.96)
+    half = t_crit * std / math.sqrt(n)
+    return {
+        "n": n,
+        "mean": mean,
+        "std": std,
+        "ci95_low": mean - half,
+        "ci95_high": mean + half,
+    }
+
+
+def run_calibration_multi_seed(
+    traces: Sequence[TraceStep],
+    *,
+    seeds: Sequence[int],
+    base_policy: Optional[SentinelPolicy] = None,
+    strategy: str = "tool",
+    train_frac: float = 0.5,
+    objective: str = "youden",
+    max_fpr: Optional[float] = 0.15,
+) -> Dict[str, Any]:
+    """
+    Repeat calibration over ``seeds``; report per-seed results plus mean ± 95% CI
+    on held-out any-intervention metrics.
+    """
+    seed_list = [int(s) for s in seeds]
+    if not seed_list:
+        raise ValueError("seeds must be non-empty")
+
+    per_seed: List[Dict[str, Any]] = []
+    for seed in seed_list:
+        one = run_calibration(
+            traces,
+            base_policy=base_policy,
+            strategy=strategy,
+            train_frac=train_frac,
+            seed=seed,
+            objective=objective,
+            max_fpr=max_fpr,
+        )
+        per_seed.append(one)
+
+    # Aggregate held-out scalars (prefer any_intervention.* when present).
+    aggregate: Dict[str, Any] = {}
+    for key in _CI_METRIC_KEYS:
+        vals = []
+        for r in per_seed:
+            held = r.get("heldout_metrics") or {}
+            v = _nested_get(held, "any_intervention", key)
+            if v is None:
+                v = _nested_get(held, key)
+            if v is not None:
+                vals.append(v)
+        aggregate[key] = _mean_ci95(vals)
+
+    # Also aggregate calibrated thresholds.
+    tau_lows = [
+        float((r.get("calibrated_policy") or {}).get("tau_low"))
+        for r in per_seed
+        if (r.get("calibrated_policy") or {}).get("tau_low") is not None
+    ]
+    tau_highs = [
+        float((r.get("calibrated_policy") or {}).get("tau_high"))
+        for r in per_seed
+        if (r.get("calibrated_policy") or {}).get("tau_high") is not None
+    ]
+    aggregate["tau_low"] = _mean_ci95(tau_lows)
+    aggregate["tau_high"] = _mean_ci95(tau_highs)
+
+    # Representative single-seed payload (first seed) for back-compat fields.
+    primary = per_seed[0]
+    return {
+        "seeds": seed_list,
+        "n_seeds": len(seed_list),
+        "strategy": strategy,
+        "train_frac": train_frac,
+        "objective": objective,
+        "per_seed": [
+            {
+                k: v
+                for k, v in r.items()
+                if k not in ("train_report", "heldout_report")
+            }
+            for r in per_seed
+        ],
+        "heldout_aggregate": aggregate,
+        "split": primary["split"],
+        "calibrated_policy": primary["calibrated_policy"],
+        "search": primary.get("search"),
+        "train_metrics": primary["train_metrics"],
+        "heldout_metrics": primary["heldout_metrics"],
+        "train_report": primary["train_report"],
+        "heldout_report": primary["heldout_report"],
+        "aggregate_report": format_aggregate(aggregate, seeds=seed_list),
+    }
+
+
+def format_aggregate(
+    aggregate: Dict[str, Any], *, seeds: Sequence[int]
+) -> str:
+    lines = [
+        f"=== calibrate/heldout aggregate over seeds={list(seeds)} ===",
+    ]
+    for key, stats in aggregate.items():
+        if not isinstance(stats, dict) or stats.get("mean") is None:
+            continue
+        lines.append(
+            f"{key}: mean={stats['mean']:.4f} "
+            f"95%CI=[{stats['ci95_low']:.4f}, {stats['ci95_high']:.4f}] "
+            f"(n={stats['n']}, std={stats['std']:.4f})"
+        )
+    return "\n".join(lines)
+
+
+def parse_seeds_arg(
+    seeds: Optional[str] = None,
+    *,
+    seed: int = 0,
+    n_seeds: Optional[int] = None,
+) -> List[int]:
+    """
+    Resolve seed list from CLI flags.
+
+    - ``--seeds 0,1,2`` → explicit list
+    - ``--n-seeds 5 --seed 0`` → ``0..4`` starting at ``seed``
+    - default → ``[seed]``
+    """
+    if seeds:
+        out = []
+        for part in str(seeds).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            out.append(int(part))
+        if not out:
+            raise ValueError("--seeds produced an empty list")
+        return out
+    if n_seeds is not None:
+        if n_seeds < 1:
+            raise ValueError("--n-seeds must be >= 1")
+        return list(range(int(seed), int(seed) + int(n_seeds)))
+    return [int(seed)]

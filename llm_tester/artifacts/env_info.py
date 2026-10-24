@@ -57,6 +57,52 @@ def _git_dirty(cwd: Optional[Path] = None) -> Optional[bool]:
         return None
 
 
+def _is_git_worktree(path: Path) -> bool:
+    """True if ``path`` is inside a git work tree (has .git file or dir)."""
+    try:
+        p = path.resolve()
+    except OSError:
+        return False
+    for cand in [p, *p.parents]:
+        git = cand / ".git"
+        if git.exists():
+            return True
+    return False
+
+
+def package_source_root() -> Optional[Path]:
+    """
+    Locate the git root (or package parent) from the installed ``llm_tester``
+    source tree — so env.json still records a SHA when cwd is outside the repo.
+    """
+    try:
+        import llm_tester
+    except ImportError:
+        return None
+    start = Path(llm_tester.__file__).resolve().parent
+    for cand in [start, start.parent, *start.parents]:
+        if (cand / ".git").exists():
+            return cand
+        # Stop at filesystem root.
+        if cand.parent == cand:
+            break
+    # Editable / src layout without walking into unrelated trees: package parent.
+    return start.parent
+
+
+def resolve_git_root(repo_root: Optional[Path] = None) -> Path:
+    """Prefer explicit root, else cwd if it is a git worktree, else package source."""
+    if repo_root is not None:
+        return Path(repo_root)
+    cwd = Path.cwd()
+    if _is_git_worktree(cwd) and _git_sha(cwd):
+        return cwd
+    pkg = package_source_root()
+    if pkg is not None and (_is_git_worktree(pkg) or _git_sha(pkg)):
+        return pkg
+    return cwd
+
+
 def _package_versions() -> Dict[str, Optional[str]]:
     versions: Dict[str, Optional[str]] = {}
     for name in _TRACKED_PACKAGES:
@@ -97,14 +143,31 @@ def collect_env(
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build env.json payload (secrets never included as values)."""
-    root = repo_root or Path.cwd()
+    root = resolve_git_root(repo_root)
+    sha = _git_sha(root)
+    # If still null (e.g. broken cwd), retry from package source explicitly.
+    source = "cwd_or_explicit"
+    if sha is None and repo_root is None:
+        pkg = package_source_root()
+        if pkg is not None:
+            pkg_sha = _git_sha(pkg)
+            if pkg_sha:
+                root = pkg
+                sha = pkg_sha
+                source = "package_source"
+    elif repo_root is not None:
+        source = "explicit"
+    else:
+        source = "cwd" if root == Path.cwd() else "package_source"
+
     env: Dict[str, Any] = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "command": command,
         "git": {
-            "sha": _git_sha(root),
+            "sha": sha,
             "dirty": _git_dirty(root),
             "root": str(root.resolve()),
+            "resolved_from": source,
         },
         "extra_sha": list(extra_sha) if extra_sha else [],
         "python": {

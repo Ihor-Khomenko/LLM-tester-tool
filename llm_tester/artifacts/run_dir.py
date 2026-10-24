@@ -278,6 +278,7 @@ def write_run_readme(
         "| `config.yaml` | Exact CLI args, params, thresholds (secrets redacted) |",
         "| `env.json` | Git SHA, package versions, hardware, timestamp |",
         "| `results.jsonl.gz` | Per-sample results (gzip JSONL) |",
+        "| `sentinel_decisions.jsonl.gz` | Per-decision guard log (gzip JSONL; when logged) |",
         "| `metrics.json` | Aggregate metrics |",
         "| `README.md` | This summary |",
         "",
