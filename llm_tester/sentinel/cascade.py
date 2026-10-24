@@ -1,0 +1,78 @@
+"""Risk aggregation and cascade decision logic."""
+
+from __future__ import annotations
+
+from typing import List, Optional, Sequence, Tuple
+
+from llm_tester.sentinel.policy import SentinelPolicy
+from llm_tester.sentinel.types import Decision, StageScore
+
+
+def aggregate_risk(
+    scores: Sequence[StageScore],
+    policy: SentinelPolicy,
+) -> Tuple[float, List[str]]:
+    """Weighted max/mean hybrid of enabled stage scores → r in [0, 1]."""
+    if not scores:
+        return 0.0, []
+
+    weights = {
+        "S1": policy.weight_s1 if policy.enable_s1 else 0.0,
+        "S2": policy.weight_s2 if policy.enable_s2 else 0.0,
+        "S3": policy.weight_s3 if policy.enable_s3 else 0.0,
+    }
+    weighted_sum = 0.0
+    weight_total = 0.0
+    peak = 0.0
+    reasons: List[str] = []
+
+    for s in scores:
+        w = weights.get(s.stage, 0.0)
+        if w <= 0 and s.stage in weights:
+            continue
+        if s.stage == "S4":
+            # S4 overrides when present.
+            return float(min(1.0, s.score)), list(s.reasons)
+        peak = max(peak, s.score)
+        if w > 0:
+            weighted_sum += w * s.score
+            weight_total += w
+        reasons.extend(s.reasons)
+
+    if weight_total <= 0:
+        return float(min(1.0, peak)), reasons
+
+    mean = weighted_sum / weight_total
+    # Emphasize peaks so a single strong S2 hit is not diluted.
+    risk = 0.6 * mean + 0.4 * peak
+    return float(min(1.0, max(0.0, risk))), reasons
+
+
+def decide_from_risk(
+    risk: float,
+    policy: SentinelPolicy,
+    *,
+    has_s4_verdict: bool = False,
+    s4_score: Optional[float] = None,
+) -> Decision:
+    if has_s4_verdict and s4_score is not None:
+        if s4_score >= 0.5:
+            return (
+                Decision.ASK_USER
+                if policy.ask_user_on_block or policy.high_risk_action == "ask_user"
+                else Decision.BLOCK
+            )
+        return Decision.ALLOW
+
+    if risk >= policy.tau_high:
+        if policy.high_risk_action == "ask_user" or policy.ask_user_on_block:
+            return Decision.ASK_USER
+        return Decision.BLOCK
+    if risk <= policy.tau_low:
+        return Decision.ALLOW
+    # Grey zone.
+    if policy.enable_s4:
+        return Decision.ESCALATE
+    # Without S4, grey zone → block conservatively if above mid, else allow.
+    mid = (policy.tau_low + policy.tau_high) / 2.0
+    return Decision.BLOCK if risk >= mid else Decision.ALLOW

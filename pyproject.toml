@@ -19,14 +19,35 @@ dependencies = [
 [project.optional-dependencies]
 guard = ["llm-guard"]
 datasets = ["datasets>=2.14.0"]
-dev = ["pytest>=7.0"]
-all = ["llm-guard", "datasets>=2.14.0", "pytest>=7.0"]
+# Self-contained MCP-Sentinel subpackage (extractable to mcp-sentinel later).
+# Core S1–S2 need no extras; PyYAML for policy files; mcp for proxy env helpers;
+# sentence-transformers for S3 embeddings backend.
+sentinel = ["PyYAML>=6.0"]
+sentinel-s3 = ["sentence-transformers>=2.2.0"]
+sentinel-mcp = ["mcp>=1.0.0"]
+sentinel-all = [
+    "PyYAML>=6.0",
+    "sentence-transformers>=2.2.0",
+    "mcp>=1.0.0",
+]
+dev = ["pytest>=7.0", "PyYAML>=6.0"]
+all = [
+    "llm-guard",
+    "datasets>=2.14.0",
+    "pytest>=7.0",
+    "PyYAML>=6.0",
+    "sentence-transformers>=2.2.0",
+    "mcp>=1.0.0",
+]
 
 [project.scripts]
 llmtest = "llm_tester.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["llm_tester*"]
+
+[tool.setuptools.package-data]
+llm_tester = ["data/sentinel/*", "data/agent/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
