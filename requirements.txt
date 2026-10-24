@@ -1,3 +1,7 @@
+# Prefer: pip install -e ".[dev]"  or  pip install -e ".[all]"
+# Kept for convenience / older workflows.
+openai>=1.40.0
+python-dotenv>=1.0.0
+datasets>=2.14.0
 llm-guard
-ollama
-
+pytest>=7.0

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Offline unit tests
+    runs-on: ubuntu-latest
+    # No secrets / API keys — tests must stay fully offline.
+    env:
+      HF_DATASETS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      # Ensure provider env vars are unset so accidental live clients fail fast.
+      OPENAI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      XAI_API_KEY: ""
+      GROQ_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package (dev extras only — no live providers)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run offline tests
+        run: python -m pytest -q
+
+      - name: Sanity-check CLI help (no network)
+        run: |
+          llmtest --help
+          llmtest datasets
+          llmtest run --help
+          llmtest report --help
