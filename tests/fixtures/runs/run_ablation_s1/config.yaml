@@ -1,0 +1,11 @@
+command: guard-eval
+dataset: synthetic
+no_s1: true
+no_s2: false
+no_s3: false
+ablation: no-s1
+stages:
+  s1: false
+  s2: true
+  s3: true
+  s4: false

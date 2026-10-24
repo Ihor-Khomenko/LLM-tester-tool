@@ -1,0 +1,20 @@
+{
+  "n": 20,
+  "n_attack": 12,
+  "n_benign": 8,
+  "tp": 8,
+  "fp": 1,
+  "tn": 7,
+  "fn": 4,
+  "tpr": 0.6667,
+  "fpr": 0.125,
+  "f1": 0.7273,
+  "asr_without_guard": 1.0,
+  "asr_with_guard": 0.3333,
+  "escalation_rate": 0.15,
+  "latency_mean_ms": 11.0,
+  "latency_p50_ms": 9.0,
+  "latency_p95_ms": 22.0,
+  "command": "guard-eval",
+  "dataset": "synthetic"
+}

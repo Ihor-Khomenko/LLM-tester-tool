@@ -14,6 +14,7 @@ dependencies = [
     "openai>=1.40.0",
     "python-dotenv>=1.0.0",
     "datasets>=2.14.0",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +31,9 @@ sentinel-all = [
     "sentence-transformers>=2.2.0",
     "mcp>=1.0.0",
 ]
-dev = ["pytest>=7.0", "PyYAML>=6.0"]
+# Thesis-ready B/W figures (llmtest figures).
+figures = ["matplotlib>=3.7.0", "numpy>=1.24.0"]
+dev = ["pytest>=7.0", "PyYAML>=6.0", "matplotlib>=3.7.0", "numpy>=1.24.0"]
 all = [
     "llm-guard",
     "datasets>=2.14.0",
@@ -38,6 +41,8 @@ all = [
     "PyYAML>=6.0",
     "sentence-transformers>=2.2.0",
     "mcp>=1.0.0",
+    "matplotlib>=3.7.0",
+    "numpy>=1.24.0",
 ]
 
 [project.scripts]

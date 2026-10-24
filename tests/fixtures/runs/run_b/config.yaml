@@ -1,0 +1,18 @@
+command: guard-eval
+dataset: synthetic
+provider: null
+model: null
+no_s1: false
+no_s2: true
+no_s3: false
+only_s4: false
+ablation: no-s2
+stages:
+  s1: true
+  s2: false
+  s3: true
+  s4: false
+thresholds:
+  tau_low: 0.25
+  tau_high: 0.70
+  s1_block_threshold: 0.85

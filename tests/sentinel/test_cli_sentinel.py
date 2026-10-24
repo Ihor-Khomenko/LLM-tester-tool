@@ -7,24 +7,47 @@ from llm_tester.cli import main
 from llm_tester.providers import ChatResult
 
 
-def test_guard_eval_synthetic(capsys):
-    rc = main(["guard-eval", "--dataset", "synthetic"])
+def test_guard_eval_synthetic(tmp_path: Path, capsys):
+    rc = main(
+        ["guard-eval", "--dataset", "synthetic", "--run-dir", str(tmp_path / "ge")]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "TPR=" in out
     assert "preliminary" in out.lower() or "Preliminary" in out or "preliminary" in out
+    assert (tmp_path / "ge" / "metrics.json").exists()
 
 
-def test_guard_eval_json(capsys):
-    rc = main(["guard-eval", "--dataset", "synthetic", "--json", "--no-s3"])
+def test_guard_eval_json(tmp_path: Path, capsys):
+    rc = main(
+        [
+            "guard-eval",
+            "--dataset",
+            "synthetic",
+            "--json",
+            "--no-s3",
+            "--run-dir",
+            str(tmp_path / "ge_json"),
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert '"tpr"' in out
     assert '"f1"' in out
 
 
-def test_guard_eval_ablation_flags(capsys):
-    rc = main(["guard-eval", "--dataset", "synthetic", "--no-s1", "--no-s2"])
+def test_guard_eval_ablation_flags(tmp_path: Path, capsys):
+    rc = main(
+        [
+            "guard-eval",
+            "--dataset",
+            "synthetic",
+            "--no-s1",
+            "--no-s2",
+            "--run-dir",
+            str(tmp_path / "ge_abl"),
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "ablation" in out.lower() or "TPR=" in out
@@ -32,11 +55,14 @@ def test_guard_eval_ablation_flags(capsys):
 
 def test_agent_bench_mocked(tmp_path: Path):
     out = tmp_path / "ab.jsonl"
+    run_dir = tmp_path / "ab_run"
     mock_provider = MagicMock()
     mock_provider.chat.return_value = ChatResult(
         content="Final Answer: ok", latency_s=0.01
     )
-    with patch("llm_tester.cli.LLMProvider", return_value=mock_provider):
+    with patch(
+        "llm_tester.agent.provider_adapter.LLMProvider", return_value=mock_provider
+    ):
         rc = main(
             [
                 "agent-bench",
@@ -47,12 +73,16 @@ def test_agent_bench_mocked(tmp_path: Path):
                 "--without-guard",
                 "--out",
                 str(out),
+                "--run-dir",
+                str(run_dir),
                 "--max-requests",
                 "2",
             ]
         )
     assert rc == 0
     assert out.exists()
+    assert (run_dir / "results.jsonl.gz").exists()
+    assert (run_dir / "config.yaml").exists()
 
 
 def test_sentinel_proxy_requires_command():
@@ -70,3 +100,6 @@ def test_help_lists_new_commands():
     assert "guard-eval" in help_txt
     assert "agent-bench" in help_txt
     assert "sentinel-proxy" in help_txt
+    assert "index" in help_txt
+    assert "compare" in help_txt
+    assert "figures" in help_txt

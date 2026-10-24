@@ -1,4 +1,4 @@
-"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``agent-bench``."""
+"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``agent-bench``, ``index``, ``compare``, ``figures``."""
 
 from __future__ import annotations
 
@@ -6,8 +6,18 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
+from llm_tester.artifacts.cli_util import (
+    add_run_dir_args,
+    agent_summary_to_metrics,
+    parse_extra_sha,
+    prepare_run_dir,
+    summary_to_metrics,
+)
+from llm_tester.artifacts.compare import compare_runs, format_compare
+from llm_tester.artifacts.index import build_index, write_index_csv
+from llm_tester.artifacts.run_dir import finalize_run_dir, open_results_writer
 from llm_tester.config import (
     DEFAULT_SEED,
     DEFAULT_TEMPERATURE,
@@ -89,14 +99,18 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("results.jsonl"),
-        help="JSONL output path (every response is logged)",
+        default=None,
+        help=(
+            "Optional legacy/plain JSONL mirror path. "
+            "Primary results always go to <run-dir>/results.jsonl.gz"
+        ),
     )
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Append to --out and skip prompt ids already present (quota-friendly)",
+        help="Append to run-dir results and skip prompt ids already present (quota-friendly)",
     )
+    add_run_dir_args(parser, default_name_help="from dataset/provider/model")
     parser.add_argument(
         "--max-requests",
         type=int,
@@ -250,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ge.add_argument("--no-seed", action="store_true")
+    add_run_dir_args(ge, default_name_help="guard-eval_<dataset>")
 
     ab = sub.add_parser(
         "agent-bench",
@@ -298,14 +313,15 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument(
         "--out",
         type=Path,
-        default=Path("agent_bench.jsonl"),
-        help="JSONL output path",
+        default=None,
+        help="Optional legacy/plain JSONL mirror; primary is <run-dir>/results.jsonl.gz",
     )
     ab.add_argument(
         "--resume",
         action="store_true",
-        help="Skip scenario ids already present in --out",
+        help="Skip scenario ids already present in run-dir results",
     )
+    add_run_dir_args(ab, default_name_help="agent-bench_<provider>")
     ab.add_argument(
         "--max-requests",
         type=int,
@@ -337,6 +353,87 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs=argparse.REMAINDER,
         help="Backend command after --",
+    )
+
+    idx = sub.add_parser(
+        "index",
+        help="Build index.csv over a runs/ tree for thesis experiments",
+    )
+    idx.add_argument(
+        "runs_root",
+        type=Path,
+        help="Root directory containing run artefact folders",
+    )
+    idx.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output CSV path (default: <runs-root>/index.csv)",
+    )
+
+    cmp_p = sub.add_parser(
+        "compare",
+        help="Diff metrics.json across two or more run directories",
+    )
+    cmp_p.add_argument(
+        "runs",
+        nargs="+",
+        type=Path,
+        help="Run directories (at least two recommended)",
+    )
+    cmp_p.add_argument(
+        "--format",
+        dest="fmt",
+        default="md",
+        choices=["md", "csv", "docx-ready"],
+        help="Output format (docx-ready = markdown with Ukrainian table caption above)",
+    )
+    cmp_p.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Optional file to write (default: stdout)",
+    )
+    cmp_p.add_argument(
+        "--table-number",
+        type=int,
+        default=1,
+        help="Suggested table number for caption (Таблиця 4.n)",
+    )
+
+    fig = sub.add_parser(
+        "figures",
+        help="Emit thesis-ready B/W figures (PNG+SVG), tables, and captions manifest",
+    )
+    fig.add_argument(
+        "runs",
+        nargs="+",
+        type=Path,
+        help="One or more run directories (or a runs root with a single child)",
+    )
+    fig.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output directory for figures / tables / figures_manifest.json",
+    )
+    fig.add_argument(
+        "--lang",
+        default="uk",
+        choices=["uk", "en"],
+        help="Axis labels and suggested captions (default: uk)",
+    )
+    fig.add_argument(
+        "--figure-start",
+        type=int,
+        default=1,
+        help="First figure number for Рисунок 4.n captions",
+    )
+    fig.add_argument(
+        "--table-start",
+        type=int,
+        default=1,
+        help="First table number for Таблиця 4.n captions",
     )
     return parser
 
@@ -410,20 +507,83 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
             policy.s3_backend = "lite"
         policy.enable_s4 = False
 
-    guard = build_sentinel(policy=policy, llm_provider=llm, log_path=args.log)
-    metrics = evaluate_traces(traces, guard)
+    abl = []
+    if args.no_s1:
+        abl.append("-S1")
+    if args.no_s2:
+        abl.append("-S2")
+    if args.no_s3:
+        abl.append("-S3")
+    if args.only_s4:
+        abl.append("only-S4")
+    abl_slug = "".join(abl) if abl else "full"
+
+    run_dir = prepare_run_dir(
+        args,
+        "guard-eval",
+        name_parts=["guard-eval", args.dataset, abl_slug],
+    )
+    # Prefer run-dir log when --log not set.
+    log_path = args.log
+    if log_path is None:
+        log_path = run_dir / "sentinel_decisions.jsonl"
+
+    guard = build_sentinel(policy=policy, llm_provider=llm, log_path=log_path)
+    metrics, records = evaluate_traces(traces, guard, collect_records=True)
+
+    with open_results_writer(run_dir, append=False) as writer:
+        for rec in records:
+            writer.write(rec)
+
+    metrics_dict = metrics.to_dict()
+    metrics_dict["dataset"] = args.dataset
+    metrics_dict["command"] = "guard-eval"
+    config: Dict[str, Any] = {
+        "command": "guard-eval",
+        "dataset": args.dataset,
+        "dataset_path": str(args.dataset_path) if args.dataset_path else None,
+        "limit": args.limit,
+        "policy": str(args.policy) if args.policy else None,
+        "no_s1": args.no_s1,
+        "no_s2": args.no_s2,
+        "no_s3": args.no_s3,
+        "no_s4": args.no_s4,
+        "only_s4": args.only_s4,
+        "enable_s4": bool(policy.enable_s4),
+        "s3_backend": policy.s3_backend,
+        "provider": args.provider,
+        "model": args.model,
+        "base_url": args.base_url,
+        "temperature": args.temperature,
+        "seed": None if args.no_seed else args.seed,
+        "thresholds": {
+            "tau_low": policy.tau_low,
+            "tau_high": policy.tau_high,
+            "s1_block_threshold": policy.s1_block_threshold,
+        },
+        "stages": {
+            "s1": policy.enable_s1,
+            "s2": policy.enable_s2,
+            "s3": policy.enable_s3,
+            "s4": policy.enable_s4,
+        },
+        "ablation": abl_slug,
+    }
+    finalize_run_dir(
+        run_dir,
+        command="guard-eval",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model,
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
+
     if args.json:
-        print(json.dumps(metrics.to_dict(), indent=2))
+        print(json.dumps(metrics_dict, indent=2))
     else:
-        abl = []
-        if args.no_s1:
-            abl.append("-S1")
-        if args.no_s2:
-            abl.append("-S2")
-        if args.no_s3:
-            abl.append("-S3")
-        if args.only_s4:
-            abl.append("only-S4")
         title = f"guard-eval dataset={args.dataset}" + (
             f" ablation={','.join(abl)}" if abl else ""
         )
@@ -459,10 +619,32 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
             policy.enable_s4 = True
         guard = build_sentinel(policy=policy, llm_provider=provider)
 
+    run_dir = prepare_run_dir(
+        args,
+        "agent-bench",
+        name_parts=[
+            "agent-bench",
+            args.provider,
+            args.model or "default",
+            "guard" if with_guard else "raw",
+        ],
+    )
+    results_gz = run_dir / "results.jsonl.gz"
+    # Agent bench currently writes plain JSONL; use a working file then gzip via writer.
+    work_jsonl = run_dir / "_results_work.jsonl"
+    if args.resume and results_gz.exists() and not work_jsonl.exists():
+        # Inflate for resume compatibility with existing agent-bench loader.
+        from llm_tester.artifacts.run_dir import load_results
+
+        with work_jsonl.open("w", encoding="utf-8") as fh:
+            for rec in load_results(results_gz):
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    out_path = args.out or work_jsonl
     summary = run_agent_bench(
         DEFAULT_SCENARIOS,
         provider,
-        out_path=args.out,
+        out_path=out_path,
         with_guard=with_guard,
         resume=args.resume,
         max_requests=args.max_requests,
@@ -470,6 +652,49 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
         guard=guard,
         llm_provider=provider if with_guard else None,
     )
+
+    # Compress working JSONL into results.jsonl.gz
+    source = Path(out_path)
+    if source.exists():
+        mode_append = False
+        with open_results_writer(run_dir, append=mode_append) as writer:
+            with source.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    writer.write(json.loads(line))
+        if source == work_jsonl and work_jsonl.exists():
+            work_jsonl.unlink()
+
+    metrics_dict = agent_summary_to_metrics(summary)
+    metrics_dict["command"] = "agent-bench"
+    metrics_dict["with_guard"] = with_guard
+    config: Dict[str, Any] = {
+        "command": "agent-bench",
+        "provider": args.provider,
+        "model": args.model,
+        "base_url": args.base_url,
+        "with_guard": with_guard,
+        "policy": str(args.policy) if args.policy else None,
+        "s3_backend": args.s3_backend,
+        "enable_s4": args.enable_s4,
+        "max_requests": args.max_requests,
+        "temperature": args.temperature,
+        "seed": None if args.no_seed else args.seed,
+        "resume": args.resume,
+    }
+    finalize_run_dir(
+        run_dir,
+        command="agent-bench",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model,
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -507,13 +732,22 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     start, end = parsed
     selected = slice_prompts(prompts, start, end)
+
+    run_dir = prepare_run_dir(
+        args,
+        "run",
+        name_parts=["run", args.dataset, args.provider, args.model or "default", args.guard],
+    )
+    results_gz = run_dir / "results.jsonl.gz"
+
     print(
         f"Dataset={args.dataset} prompts={len(selected)} "
         f"(indices {start}:{end}) provider={args.provider} "
         f"guard={args.guard} judge={args.judge}"
     )
+    print(f"Run directory: {run_dir}")
     if args.resume:
-        print(f"Resume enabled: skipping ids already in {args.out}")
+        print(f"Resume enabled: skipping ids already in {results_gz}")
     if args.max_requests is not None:
         print(f"Max new requests this run: {args.max_requests}")
 
@@ -545,19 +779,89 @@ def cmd_run(args: argparse.Namespace) -> int:
     judge = build_judge(args.judge, judge_provider=judge_provider)
     guard = build_guard(args.guard)
 
+    # Dual-write: gzip artefacts + optional legacy --out JSONL.
+    # run_evaluation writes plain JSONL; we use a work file then compress.
+    work_jsonl = run_dir / "_results_work.jsonl"
+    if args.resume and results_gz.exists():
+        from llm_tester.artifacts.run_dir import load_results
+
+        with work_jsonl.open("w", encoding="utf-8") as fh:
+            for rec in load_results(results_gz):
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    elif not args.resume and work_jsonl.exists():
+        work_jsonl.unlink()
+
     summary = run_evaluation(
         selected,
         provider,
         judge=judge,
         guard=guard,
-        out_path=args.out,
+        out_path=work_jsonl,
         verbose=not args.quiet,
         start_number=start + 1,
         resume=args.resume,
         max_requests=args.max_requests,
         delay=args.delay,
     )
-    print_summary(summary, args.out)
+
+    if work_jsonl.exists():
+        with open_results_writer(run_dir, append=False) as writer:
+            with work_jsonl.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    writer.write(json.loads(line))
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(work_jsonl.read_text(encoding="utf-8"), encoding="utf-8")
+        work_jsonl.unlink()
+
+    metrics_dict = summary_to_metrics(
+        summary,
+        extra={
+            "command": "run",
+            "dataset": args.dataset,
+            "provider": args.provider,
+            "model": args.model or provider.info().get("model"),
+            "guard": args.guard,
+            "judge": args.judge,
+        },
+    )
+    config: Dict[str, Any] = {
+        "command": "run",
+        "dataset": args.dataset,
+        "dataset_path": str(args.dataset_path) if args.dataset_path else None,
+        "provider": args.provider,
+        "model": args.model,
+        "base_url": args.base_url,
+        "guard": args.guard,
+        "judge": args.judge,
+        "judge_provider": args.judge_provider,
+        "judge_model": args.judge_model,
+        "range": args.range_spec,
+        "temperature": args.temperature,
+        "seed": None if args.no_seed else args.seed,
+        "max_tokens": args.max_tokens,
+        "max_requests": args.max_requests,
+        "delay": args.delay,
+        "max_retries": args.max_retries,
+        "expand_conversations": args.expand_conversations,
+        "resume": args.resume,
+        "params": params.as_dict(),
+    }
+    finalize_run_dir(
+        run_dir,
+        command="run",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model or provider.info().get("model"),
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print_summary(summary, results_gz)
+    print(f"Run artefacts written to {run_dir}")
     return 0
 
 
@@ -572,6 +876,66 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def cmd_datasets(_args: argparse.Namespace) -> int:
     print(format_dataset_list())
+    return 0
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    rows = build_index(args.runs_root)
+    out = args.out or (Path(args.runs_root) / "index.csv")
+    write_index_csv(rows, out)
+    print(f"Indexed {len(rows)} run(s) → {out}")
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    if len(args.runs) < 1:
+        print("Provide at least one run directory.", file=sys.stderr)
+        return 2
+    comparison = compare_runs(args.runs)
+    text = format_compare(
+        comparison,
+        fmt=args.fmt,
+        table_number=args.table_number,
+    )
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text, encoding="utf-8")
+        print(f"Wrote comparison to {args.out}")
+    else:
+        print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
+def cmd_figures(args: argparse.Namespace) -> int:
+    from llm_tester.artifacts.run_dir import iter_run_dirs
+    from llm_tester.figures.generate import generate_figures
+
+    run_paths: List[Path] = []
+    for p in args.runs:
+        path = Path(p)
+        if (path / "metrics.json").exists():
+            run_paths.append(path)
+        else:
+            found = iter_run_dirs(path)
+            if not found:
+                print(f"No run artefacts under {path}", file=sys.stderr)
+                return 1
+            run_paths.extend(found)
+    if not run_paths:
+        print("No run directories to plot.", file=sys.stderr)
+        return 1
+    manifest = generate_figures(
+        run_paths,
+        args.out,
+        lang=args.lang,
+        figure_start=args.figure_start,
+        table_start=args.table_start,
+    )
+    print(
+        f"Wrote {len(manifest['figures'])} figure(s) and "
+        f"{len(manifest['tables'])} table(s) to {args.out}"
+    )
+    print(f"Manifest: {manifest.get('manifest_path')}")
     return 0
 
 
@@ -590,6 +954,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_agent_bench(args)
     if args.command == "sentinel-proxy":
         return cmd_sentinel_proxy(args)
+    if args.command == "index":
+        return cmd_index(args)
+    if args.command == "compare":
+        return cmd_compare(args)
+    if args.command == "figures":
+        return cmd_figures(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
 

@@ -15,8 +15,11 @@ build/
 .cache/
 *.jsonl
 !llm_tester/data/**/*.jsonl
+!tests/fixtures/**/*.jsonl
 test_results.json
 toxicchat_test_results.json
 guarded_results.csv
 guarded_results.jsonl
+/runs/
+/figures_out/
 .DS_Store

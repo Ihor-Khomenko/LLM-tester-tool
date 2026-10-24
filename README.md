@@ -6,7 +6,9 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
+- **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
+- **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
 - Datasets (local and/or Hugging Face, cached under `.cache/llm_tester/`):
   - [HarmfulQA](https://huggingface.co/datasets/declare-lab/HarmfulQA)
@@ -43,6 +45,8 @@ pip install -e ".[guard]"
 pip install -e ".[sentinel]"
 # Optional: S3 embeddings / MCP SDK helpers
 pip install -e ".[sentinel-all]"
+# Thesis figures (matplotlib):
+pip install -e ".[figures]"
 ```
 
 Copy `.env.example` to `.env` and set API keys as needed.
@@ -64,8 +68,18 @@ llmtest run \
   --model llama3 \
   --guard none \
   --range 0-100 \
-  --out results.jsonl
+  --run-dir runs/harmfulqa_ollama_llama3
 ```
+
+Every `run` / `guard-eval` / `agent-bench` writes a **run directory** (default `runs/<YYYYMMDD>_<name>`):
+
+| File | Contents |
+|------|----------|
+| `config.yaml` | Exact args, params, thresholds (API keys redacted) |
+| `env.json` | This repo git SHA, optional `--extra-sha` (e.g. mcp-security-research), Python/package versions, provider/model ids, timestamp, hardware |
+| `results.jsonl.gz` | Per-sample results |
+| `metrics.json` | Aggregate metrics |
+| `README.md` | Human-readable summary for the thesis `experiments/runs/` tree |
 
 Common options:
 
@@ -77,8 +91,11 @@ Common options:
 | `--guard` | `none`, `llmguard` | Default `none` |
 | `--judge` | `phrase`, `llamaguard`, `llm` | Default `phrase` |
 | `--range` | `all`, `N`, `start-end` | Half-open `[start, end)` |
-| `--out` | path | JSONL; every response is logged |
-| `--resume` | flag | Skip prompt ids already in `--out`; append new rows |
+| `--run-dir` | path | Reproducible artefacts root (default `runs/<date>_<name>`) |
+| `--run-name` | slug | Used in the default `runs/<date>_<name>` path |
+| `--extra-sha` | `label=sha` | Repeatable; recorded in `env.json` (other repos) |
+| `--out` | path | Optional plain JSONL mirror (primary is `results.jsonl.gz`) |
+| `--resume` | flag | Skip ids already in the run-dir results; append new rows |
 | `--max-requests` | int | Cap new provider calls this run (spread daily quotas) |
 | `--delay` | seconds | Sleep between provider requests |
 | `--max-retries` | int | Retries on HTTP 429 with exponential backoff (default 5) |
@@ -112,11 +129,38 @@ llmtest run --dataset harmbench --provider ollama --model llama3 --guard llmguar
 ### Report metrics
 
 ```sh
-llmtest report results.jsonl
-llmtest report results.jsonl openai.jsonl --json
+llmtest report path/to/results.jsonl
+llmtest report runs/20261024_run_*/results.jsonl.gz --json
 ```
 
 Reports refusal rate, attack success rate, and mean latency (overall and per provider/model).
+
+### Index & compare runs
+
+```sh
+# Build a CSV catalogue of every run under experiments/runs/ (or ./runs)
+llmtest index runs/ --out runs/index.csv
+
+# Metrics diff table (markdown / csv / docx-ready with Таблиця 4.n caption above)
+llmtest compare runs/run_a runs/run_b --format md
+llmtest compare runs/run_a runs/run_b --format docx-ready --table-number 3
+llmtest compare runs/full runs/no_s2 runs/no_s1 --format csv --out diff.csv
+```
+
+### Thesis figures
+
+Black-and-white only (hatching / markers / linestyles — greyscale-safe). Width ≤158 mm, 300 dpi PNG + SVG, Times New Roman (fallback: Liberation Serif / DejaVu Serif). Axis labels Ukrainian by default; `--lang en` for English.
+
+Charts: ASR with vs without guard; TPR/FPR/F1 stage ablation; latency box + CDF (p50/p95 marked); escalation rate; ROC / threshold sweep when risk scores exist; run-over-run comparison. Also emits markdown tables with suggested captions and `figures_manifest.json`.
+
+```sh
+pip install -e ".[figures]"
+llmtest figures runs/run_a runs/run_b runs/run_ablation_s1 --out thesis_figures/
+llmtest figures runs/ --out thesis_figures/ --lang uk --figure-start 1 --table-start 1
+# Copy PNG/SVG + captions.md into the dissertation repo under experiments/
+```
+
+Suggested captions follow DSTU style: **Рисунок 4.n – …** (below figures) and **Таблиця 4.n – …** (above tables).
 
 ## MCP-Sentinel (agent / MCP guard)
 
@@ -162,12 +206,16 @@ S1–S2 are dependency-free. S3 backends: `lite` (default), `embeddings` (`[sent
 ### Offline evaluation
 
 ```sh
-# Bundled synthetic traces (no network)
+# Bundled synthetic traces (no network) → writes runs/<date>_guard-eval_…
 llmtest guard-eval --dataset synthetic
 
-# Ablations
-llmtest guard-eval --dataset synthetic --no-s2
-llmtest guard-eval --dataset synthetic --no-s1 --no-s3
+# Ablations (separate --run-dir per condition for figures / compare)
+llmtest guard-eval --dataset synthetic --no-s2 --run-dir runs/ablation_no_s2
+llmtest guard-eval --dataset synthetic --no-s1 --no-s3 --run-dir runs/ablation_no_s1_s3
+
+# Record SHA of a sibling mcp-security-research checkout
+llmtest guard-eval --dataset synthetic \
+  --extra-sha mcp-security-research=$(git -C ../mcp-security-research rev-parse HEAD)
 
 # InjecAgent (verified downloadable from GitHub raw; 510 dh_base cases)
 llmtest guard-eval --dataset injecagent --download-injecagent --limit 100
@@ -184,7 +232,7 @@ llmtest guard-eval --dataset synthetic --enable-s4 \
 
 Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`), shared with the parallel exporter in [mcp-security-research](https://github.com/Ihor-Khomenko/mcp-security-research).
 
-Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95. Numbers from a run are **measured preliminary results**, not published claims.
+Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95 into `metrics.json` + `results.jsonl.gz`. Numbers from a run are **measured preliminary results**, not published claims.
 
 ### Agent bench scaffold
 
@@ -272,24 +320,33 @@ cp .env.example .env   # додайте ключі API
 # Список датасетів
 llmtest datasets
 
-# Запуск тесту
+# Запуск тесту (артефакти в runs/<дата>_<назва>/)
 llmtest run --dataset harmfulqa --provider ollama --model llama3 \
-  --guard none --range 0-100 --out results.jsonl
+  --guard none --range 0-100 --run-dir runs/harmfulqa_ollama
 
 # OpenRouter (безкоштовні моделі з суфіксом :free) + ліміт запитів + resume
 llmtest run --dataset jailbreakbench --provider openrouter \
   --model meta-llama/llama-3.2-3b-instruct:free \
-  --max-requests 40 --delay 2 --resume --out openrouter.jsonl
+  --max-requests 40 --delay 2 --resume --run-dir runs/jbb_openrouter
+
+# Індекс / порівняння / рисунки для дисертації (experiments/runs/)
+llmtest index runs/ --out runs/index.csv
+llmtest compare runs/a runs/b --format docx-ready
+llmtest figures runs/a runs/b --out thesis_figures/ --lang uk
 
 # Звіт за метриками (refusal rate / attack success rate / latency)
-llmtest report results.jsonl
+llmtest report runs/harmfulqa_ollama/results.jsonl.gz
 ```
+
+Кожен прогін пише `config.yaml`, `env.json` (SHA репозиторію, опційно `--extra-sha` для mcp-security-research, версії пакетів, hardware), `results.jsonl.gz`, `metrics.json`, `README.md`. Секрети/API-ключі **не** зберігаються.
+
+Рисуноки: лише ч/б (штрихування/маркери), ширина ≤158 мм (поля А4 30/15/20/20 мм), Times New Roman (або Liberation/DejaVu Serif), підписи `Рисунок 4.n – …` під рисунком і `Таблиця 4.n – …` над таблицею.
 
 Провайдери: `ollama`, `openai`, `xai`, `openrouter`, `groq`.  
 Датасети: `harmfulqa`, `toxicchat`, `advbench`, `harmbench`, `jailbreakbench`, `promptinject`.  
 Захист: `--guard none|llmguard`.  
 Суддя відмови: `--judge phrase|llamaguard|llm`.  
-Квоти: `--max-requests`, `--delay`, `--resume` (пропуск уже записаних id у JSONL).
+Квоти: `--max-requests`, `--delay`, `--resume` (пропуск уже записаних id у results).
 
 ### MCP-Sentinel (українською)
 
