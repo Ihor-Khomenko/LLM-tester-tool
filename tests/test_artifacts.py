@@ -317,3 +317,29 @@ def test_help_lists_index_compare():
     help_txt = build_parser().format_help()
     assert "index" in help_txt
     assert "compare" in help_txt
+
+
+def test_discover_runs_skips_unreadable(tmp_path: Path, monkeypatch):
+    from llm_tester.artifacts import discover_runs
+
+    good = tmp_path / "good"
+    finalize_run(
+        good,
+        config={"command": "run"},
+        env={"timestamp": "t", "git": {}},
+        metrics={"n": 1},
+        results_records=[],
+    )
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    real_exists = Path.exists
+
+    def flaky_exists(self):  # type: ignore[no-untyped-def]
+        if "bad" in str(self) and self.name in ("metrics.json", "config.yaml"):
+            raise PermissionError("denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", flaky_exists)
+    found = discover_runs(tmp_path)
+    assert good in found
+    assert bad not in found

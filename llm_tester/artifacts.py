@@ -717,7 +717,15 @@ def load_run(run_dir: PathLike) -> RunArtifacts:
 
 def is_run_dir(path: PathLike) -> bool:
     p = Path(path)
-    return p.is_dir() and (p / METRICS_NAME).exists() and (p / CONFIG_NAME).exists()
+    try:
+        return (
+            p.is_dir()
+            and (p / METRICS_NAME).exists()
+            and (p / CONFIG_NAME).exists()
+        )
+    except OSError:
+        # Unreadable dirs (e.g. /tmp/snap-private-tmp on CI runners).
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +786,17 @@ def discover_runs(runs_root: PathLike) -> List[Path]:
         return []
     if is_run_dir(root):
         return [root]
-    runs = [p for p in sorted(root.iterdir()) if is_run_dir(p)]
+    try:
+        children = sorted(root.iterdir())
+    except OSError:
+        return []
+    runs: List[Path] = []
+    for p in children:
+        try:
+            if is_run_dir(p):
+                runs.append(p)
+        except OSError:
+            continue
     return runs
 
 
