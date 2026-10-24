@@ -1,4 +1,7 @@
-"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``guard-calibrate``, ``agent-bench``, ``index``, ``compare``, ``figures``."""
+"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
+``ablation``, ``guard-calibrate``, ``agent-bench``, ``index``, ``compare``,
+``figures``.
+"""
 
 from __future__ import annotations
 
@@ -265,6 +268,40 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ge.add_argument("--no-seed", action="store_true")
     add_run_dir_args(ge, default_name_help="guard-eval_<dataset>")
+
+    abl = sub.add_parser(
+        "ablation",
+        help=(
+            "Run stage/aggregation/checkpoint ablation matrix "
+            "(S1‥full × noisy_or|max|weighted × ±T0/T1); offline"
+        ),
+    )
+    abl.add_argument(
+        "--dataset",
+        default="synthetic",
+        choices=["synthetic", "injecagent", "jsonl", "adaptive"],
+        help="synthetic | injecagent | jsonl | adaptive (S2-evasion suite)",
+    )
+    abl.add_argument("--dataset-path", type=Path, default=None)
+    abl.add_argument("--limit", type=int, default=None)
+    abl.add_argument("--policy", type=Path, default=None)
+    abl.add_argument(
+        "--aggregations",
+        default="noisy_or,max,weighted",
+        help="Comma list: noisy_or,max,weighted",
+    )
+    abl.add_argument(
+        "--no-checkpoint-ablation",
+        action="store_true",
+        help="Skip ±T0/T1 variants (stage ladder only)",
+    )
+    abl.add_argument(
+        "--write-adaptive",
+        action="store_true",
+        help="Regenerate data/agent/adaptive_s2_traces.jsonl from synthetic seeds",
+    )
+    abl.add_argument("--json", action="store_true")
+    add_run_dir_args(abl, default_name_help="ablation_<dataset>")
 
     ab = sub.add_parser(
         "agent-bench",
@@ -692,6 +729,112 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
             "\nNote: numbers are measured on this run's traces (preliminary). "
             "Not claimed as published results."
         )
+    return 0
+
+
+def cmd_ablation(args: argparse.Namespace) -> int:
+    from llm_tester.agent.ablation import format_ablation_table, run_ablation_matrix
+    from llm_tester.agent.traces import TraceSchemaError, resolve_traces
+    from llm_tester.sentinel.policy import load_policy
+
+    if args.write_adaptive:
+        from llm_tester.agent.adaptive.generate import materialize_default_dataset
+
+        path = materialize_default_dataset(
+            Path(args.dataset_path) if args.dataset_path else None
+        )
+        print(f"Wrote adaptive dataset: {path}")
+        if args.dataset != "adaptive" and args.dataset_path is None:
+            # Still continue if user only wanted materialization? Prefer continue.
+            pass
+
+    try:
+        if args.dataset == "adaptive":
+            from llm_tester.agent.adaptive.generate import (
+                DEFAULT_ADAPTIVE_PATH,
+                load_adaptive_traces,
+            )
+
+            path = args.dataset_path or DEFAULT_ADAPTIVE_PATH
+            traces = load_adaptive_traces(path)
+            if args.limit is not None:
+                traces = traces[: args.limit]
+        else:
+            traces = resolve_traces(
+                args.dataset,
+                path=args.dataset_path,
+                limit=args.limit,
+                download=False,
+            )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except TraceSchemaError as exc:
+        print(f"Trace schema error: {exc}", file=sys.stderr)
+        return 2
+
+    if not traces:
+        print("No traces loaded.", file=sys.stderr)
+        return 1
+
+    aggs = [a.strip() for a in str(args.aggregations).split(",") if a.strip()]
+    policy = load_policy(args.policy)
+    result = run_ablation_matrix(
+        traces,
+        policy=policy,
+        aggregations=aggs,
+        include_checkpoint_ablation=not args.no_checkpoint_ablation,
+    )
+
+    run_dir = prepare_run_dir(
+        args,
+        "ablation",
+        name_parts=["ablation", args.dataset],
+    )
+    # Primary metrics.json = first cell (S1|noisy_or|T0+T1) for index/compare;
+    # full matrix in ablation_matrix.json.
+    primary = result["cells"][0]["metrics"] if result["cells"] else {}
+    primary = dict(primary)
+    primary["command"] = "ablation"
+    primary["dataset"] = args.dataset
+    primary["n_cells"] = result["n_cells"]
+    matrix_path = run_dir / "ablation_matrix.json"
+    matrix_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    config = {
+        "command": "ablation",
+        "dataset": args.dataset,
+        "dataset_path": str(args.dataset_path) if args.dataset_path else None,
+        "limit": args.limit,
+        "aggregations": aggs,
+        "checkpoint_ablation": not args.no_checkpoint_ablation,
+        "n_cells": result["n_cells"],
+        "cell_names": [c["name"] for c in result["cells"]],
+    }
+    finalize_run_dir(
+        run_dir,
+        command="ablation",
+        config=config,
+        metrics=primary,
+        argv=sys.argv[1:],
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    # Also drop a compact CSV for thesis tables.
+    csv_path = run_dir / "ablation_summary.csv"
+    with csv_path.open("w", encoding="utf-8") as fh:
+        fh.write("name,stages,aggregation,checkpoints,tpr,fpr,f1,asr_with_guard\n")
+        for c in result["cells"]:
+            m = c["metrics"]
+            fh.write(
+                f"{c['name']},{c['stages']},{c['aggregation']},{c['checkpoints']},"
+                f"{m.get('tpr')},{m.get('fpr')},{m.get('f1')},{m.get('asr_with_guard')}\n"
+            )
+
+    print(f"Run artefacts written to {run_dir}")
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(format_ablation_table(result))
     return 0
 
 
@@ -1192,6 +1335,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_datasets(args)
     if args.command == "guard-eval":
         return cmd_guard_eval(args)
+    if args.command == "ablation":
+        return cmd_ablation(args)
     if args.command == "guard-calibrate":
         return cmd_guard_calibrate(args)
     if args.command == "agent-bench":
