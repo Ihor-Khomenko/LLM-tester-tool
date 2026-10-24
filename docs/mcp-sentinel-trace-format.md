@@ -7,6 +7,22 @@ Shared offline-eval format between:
 
 One JSON object per line (JSONL). Encoding: UTF-8. Lines starting with `#` are ignored.
 
+## Schema negotiation
+
+| `schema_version` | Behaviour |
+|------------------|------------|
+| `mcp-sentinel-trace/v1` (aliases: `v1`, `mcp-sentinel/v1`) | Native parse |
+| `1.0` (mcp-security-research `scenarios.export`) | Auto-converted via `llm_tester.agent.mcpsr` (`attack_class` + `trace` events) |
+| missing, but record already has v1 fields | Accepted (legacy fixtures) |
+| anything else | **Hard error** (`TraceSchemaError`) — no silent accept |
+
+### mcp-security-research export `1.0` → v1
+
+Native export fields: `attack_class`, `trace[]` with events
+`user_message` / `tools_listed` / `tools_mutated` / `tool_result` / `tool_call`
+(optional `attack_step` on malicious calls). Mapped to `attack_type`, `tools`,
+`tools_after`, `tool_outputs`, `call` as in the pilot `convert_mcpsr.py`.
+
 ## Required / core fields
 
 | Field | Type | Description |
@@ -84,9 +100,12 @@ llmtest guard-eval --dataset jsonl \
 3. If `tools_after` → `check_tool_registration(tools_after)` (rug pull)
 4. For each `tool_outputs[]` → `on_tool_output` (T1)
 5. If `call` → `check_tool_call` (T2)
-6. Final decision vs `label` → TPR/FPR/…
+6. **Detection (any checkpoint):** `block` / `ask_user` / `sanitize` at T0, T1, or T2
+   counts as a positive detection (pilot fix: T0 rug-pull blocks and T1 sanitises
+   were previously ignored because only the final T2 decision was scored).
+7. Metrics include `by_checkpoint` and `first_detection` breakdowns.
 
-S1–S2 need no LLM. S3/S4 may use a plugged-in provider (`--provider` / `--judge-provider`).
+S1–S2 need no LLM. S3/S4 may use a plugged-in provider (`--provider`).
 
 ## Versioning
 

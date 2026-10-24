@@ -151,9 +151,7 @@ class TaintStage:
         weighted_scores: List[float] = []
 
         tool_l = call.name.lower()
-        side_effect = any(
-            sub.lower() in tool_l for sub in self.policy.side_effect_tools
-        )
+        side_effect = _name_matches_any(tool_l, self.policy.side_effect_tools)
 
         for key, raw in (call.arguments or {}).items():
             value = raw if isinstance(raw, str) else str(raw)
@@ -206,6 +204,22 @@ class TaintStage:
 
     def mark_output(self, source: str, content: str) -> None:
         self.store.add_tool_output(source, content)
+
+
+def _name_matches_any(tool_l: str, needles: Iterable[str]) -> bool:
+    """Match whole segments / full aliases, not bare substrings (notes.write ≠ write)."""
+    import re
+
+    parts = set(re.split(r"[._\-\s]+", tool_l))
+    for raw in needles:
+        n = raw.lower().strip()
+        if not n:
+            continue
+        if tool_l == n or n in parts:
+            return True
+        if ("_" in n or "." in n or len(n) >= 6) and n in tool_l:
+            return True
+    return False
 
 
 def build_store_from_outputs(

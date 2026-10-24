@@ -24,14 +24,18 @@ from typing import Any, Dict, List, Optional, Sequence
 from llm_tester.sentinel.types import ToolCall, ToolSpec
 
 SCHEMA_VERSION = "mcp-sentinel-trace/v1"
+# Explicit allow-list. Do NOT include bare "1" / "1.0" — those are MSR export.
 SCHEMA_VERSIONS_ACCEPTED = frozenset(
     {
         SCHEMA_VERSION,
-        "1",
         "v1",
         "mcp-sentinel/v1",
     }
 )
+
+
+class TraceSchemaError(ValueError):
+    """Unknown or invalid trace schema_version / record shape."""
 
 ATTACK_TYPES = frozenset(
     {
@@ -193,18 +197,60 @@ def _normalize_attack_type(raw: Any, label: str) -> str:
     return key
 
 
+def _looks_like_v1(data: Dict[str, Any]) -> bool:
+    """Legacy / unversioned records that already use v1 field names."""
+    return bool(
+        data.get("user_request")
+        or data.get("attack_type")
+        or data.get("tool_outputs")
+        or data.get("call")
+        or data.get("tools_after")
+    )
+
+
 def parse_trace_record(data: Dict[str, Any], *, default_id: str = "") -> TraceStep:
     """
     Parse one JSON object into :class:`TraceStep`.
 
-    Accepts ``mcp-sentinel-trace/v1`` and a few aliases used by early exporters
-    (``user_task`` / ``user_prompt``, ``outputs``, ``tool_call``, etc.).
+    Accepted:
+    - ``mcp-sentinel-trace/v1`` (and aliases in SCHEMA_VERSIONS_ACCEPTED)
+    - mcp-security-research export ``schema_version: "1.0"`` (auto-converted)
+    - unversioned records that already look like v1 (legacy fixtures)
+
+    Unknown / invalid schemas raise :class:`TraceSchemaError` (no silent accept).
     """
     if not isinstance(data, dict):
-        raise TypeError("trace record must be a JSON object")
+        raise TraceSchemaError("trace record must be a JSON object")
 
-    version = str(data.get("schema_version") or data.get("schema") or SCHEMA_VERSION)
-    # Unknown versions still parse with best-effort field mapping.
+    from llm_tester.agent.mcpsr import convert_mcpsr_record, is_mcpsr_record
+
+    raw_version = data.get("schema_version")
+    if raw_version is None:
+        raw_version = data.get("schema")
+    version = str(raw_version).strip() if raw_version is not None else ""
+
+    if is_mcpsr_record(data):
+        try:
+            data = convert_mcpsr_record(data, default_id=default_id)
+        except ValueError as exc:
+            raise TraceSchemaError(str(exc)) from exc
+        version = SCHEMA_VERSION
+    elif version and version not in SCHEMA_VERSIONS_ACCEPTED:
+        raise TraceSchemaError(
+            f"Unknown trace schema_version {version!r} for record "
+            f"{data.get('id') or default_id!r}. "
+            f"Accepted: {sorted(SCHEMA_VERSIONS_ACCEPTED)} or "
+            f"mcp-security-research '1.0' (attack_class+trace). "
+            f"See docs/mcp-sentinel-trace-format.md."
+        )
+    elif not version:
+        if not _looks_like_v1(data):
+            raise TraceSchemaError(
+                f"Trace record {data.get('id') or default_id!r} has no "
+                f"schema_version and does not look like {SCHEMA_VERSION}. "
+                f"Refusing silent parse."
+            )
+        version = SCHEMA_VERSION
 
     user = (
         data.get("user_request")
@@ -241,8 +287,6 @@ def parse_trace_record(data: Dict[str, Any], *, default_id: str = "") -> TraceSt
     meta = dict(data.get("meta") or {})
     if "source" in data and "source" not in meta:
         meta["source"] = data["source"]
-    if version and version not in SCHEMA_VERSIONS_ACCEPTED:
-        meta.setdefault("schema_version_raw", version)
 
     return TraceStep(
         id=str(data.get("id") or default_id),
@@ -254,20 +298,37 @@ def parse_trace_record(data: Dict[str, Any], *, default_id: str = "") -> TraceSt
         tools=tools,
         tools_after=tools_after,
         meta=meta,
-        schema_version=version if version in SCHEMA_VERSIONS_ACCEPTED else SCHEMA_VERSION,
+        schema_version=SCHEMA_VERSION,
     )
 
 
 def load_jsonl_traces(path: Path) -> List[TraceStep]:
-    """Load ``mcp-sentinel-trace/v1`` (or compatible) JSONL."""
+    """Load JSONL; supports v1 and mcp-security-research 1.0. Fails loud on bad schema."""
     traces: List[TraceStep] = []
+    errors: List[str] = []
     with path.open("r", encoding="utf-8") as fh:
         for i, line in enumerate(fh):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            data = json.loads(line)
-            traces.append(parse_trace_record(data, default_id=f"trace-{i}"))
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as exc:
+                errors.append(f"line {i+1}: invalid JSON ({exc})")
+                continue
+            try:
+                traces.append(parse_trace_record(data, default_id=f"trace-{i}"))
+            except TraceSchemaError as exc:
+                errors.append(f"line {i+1}: {exc}")
+    if errors and not traces:
+        raise TraceSchemaError(
+            f"Failed to load any traces from {path}:\n  - " + "\n  - ".join(errors[:10])
+        )
+    if errors:
+        raise TraceSchemaError(
+            f"Loaded {len(traces)} traces from {path} but {len(errors)} line(s) failed:\n"
+            f"  - " + "\n  - ".join(errors[:10])
+        )
     return traces
 
 

@@ -43,8 +43,11 @@ def aggregate_risk(
         return float(min(1.0, peak)), reasons
 
     mean = weighted_sum / weight_total
-    # Emphasize peaks so a single strong S2 hit is not diluted.
-    risk = 0.6 * mean + 0.4 * peak
+    # Emphasize peaks so a single strong S2/S3 hit is not diluted by zeros.
+    risk = 0.45 * mean + 0.55 * peak
+    # Hard floor: a near-certain stage score must dominate the cascade.
+    if peak >= 0.85:
+        risk = max(risk, peak)
     return float(min(1.0, max(0.0, risk))), reasons
 
 
@@ -54,6 +57,7 @@ def decide_from_risk(
     *,
     has_s4_verdict: bool = False,
     s4_score: Optional[float] = None,
+    stage_scores: Optional[Sequence[StageScore]] = None,
 ) -> Decision:
     if has_s4_verdict and s4_score is not None:
         if s4_score >= 0.5:
@@ -64,15 +68,41 @@ def decide_from_risk(
             )
         return Decision.ALLOW
 
+    # Per-stage hard thresholds (S3 critical mismatch → block/escalate).
+    if stage_scores:
+        for s in stage_scores:
+            if s.stage == "S3" and s.score >= policy.s3_block_threshold:
+                if policy.enable_s4:
+                    return Decision.ESCALATE
+                return (
+                    Decision.ASK_USER
+                    if policy.ask_user_on_block or policy.high_risk_action == "ask_user"
+                    else Decision.BLOCK
+                )
+            if s.stage == "S2" and s.score >= policy.s2_block_threshold:
+                if risk < policy.tau_high:
+                    risk = max(risk, s.score)
+            if s.stage == "S1" and s.score >= policy.s1_block_threshold:
+                risk = max(risk, s.score)
+
     if risk >= policy.tau_high:
         if policy.high_risk_action == "ask_user" or policy.ask_user_on_block:
             return Decision.ASK_USER
         return Decision.BLOCK
     if risk <= policy.tau_low:
         return Decision.ALLOW
-    # Grey zone.
+    # Grey zone: escalate to S4 when enabled.
     if policy.enable_s4:
         return Decision.ESCALATE
-    # Without S4, grey zone → block conservatively if above mid, else allow.
+    # Without S4: block when a stage already hit a hard threshold (handled
+    # above) or risk is in the upper half of the grey band; otherwise allow
+    # (preserves utility). Critical S3 on side-effect tools scores ≥0.85 and
+    # clears tau_high via the peak floor.
     mid = (policy.tau_low + policy.tau_high) / 2.0
-    return Decision.BLOCK if risk >= mid else Decision.ALLOW
+    if risk >= mid:
+        return (
+            Decision.ASK_USER
+            if policy.ask_user_on_block or policy.high_risk_action == "ask_user"
+            else Decision.BLOCK
+        )
+    return Decision.ALLOW

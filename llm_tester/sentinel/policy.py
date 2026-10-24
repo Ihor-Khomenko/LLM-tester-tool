@@ -92,7 +92,20 @@ class SentinelPolicy:
     # Side-effect tool name substrings: elevate non-sink taint when present.
     side_effect_tools: List[str] = field(
         default_factory=lambda: list(DEFAULT_DESTRUCTIVE_TOOLS)
-        + ["transfer", "send", "email", "http", "post", "wire", "grant", "exec"]
+        + [
+            "transfer",
+            "send",
+            "email",
+            "http",
+            "post",
+            "wire",
+            "grant",
+            "exec",
+            "write_file",
+            "writefile",
+            "upload",
+            "download",
+        ]
     )
 
     # S3 — backend: lite | embeddings | llm (llm needs injected LLMChat)

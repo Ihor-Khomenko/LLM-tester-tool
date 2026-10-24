@@ -220,17 +220,17 @@ llmtest guard-eval --dataset synthetic \
 # InjecAgent (verified downloadable from GitHub raw; 510 dh_base cases)
 llmtest guard-eval --dataset injecagent --download-injecagent --limit 100
 
-# External JSONL from mcp-security-research (tool poisoning / rug pull / IPI)
+# External JSONL — native v1 *or* mcp-security-research export schema 1.0
 llmtest guard-eval --dataset jsonl --dataset-path scenarios.jsonl
 llmtest guard-eval --dataset jsonl \
-  --dataset-path llm_tester/data/agent/msr_examples.jsonl
+  --dataset-path llm_tester/data/agent/msr_schema10_examples.jsonl
 
 # Optional S3/S4 via any provider (not used in CI)
 llmtest guard-eval --dataset synthetic --enable-s4 \
   --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free
 ```
 
-Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`), shared with the parallel exporter in [mcp-security-research](https://github.com/Ihor-Khomenko/mcp-security-research).
+Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`, plus auto-adapter for research export `1.0`). Unknown schemas fail loudly. Detection counts **any** of T0 block / T1 sanitize / T2 block.
 
 Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95 into `metrics.json` + `results.jsonl.gz`. Numbers from a run are **measured preliminary results**, not published claims.
 

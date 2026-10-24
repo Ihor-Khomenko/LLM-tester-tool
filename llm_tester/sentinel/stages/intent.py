@@ -158,11 +158,27 @@ class IntentStage:
             details["init_error"] = self._init_error
 
         backend = details.get("backend", "lite")
-        scale = 0.55 if backend == "lite" else 1.0
+        from llm_tester.sentinel.stages.taint import _name_matches_any
+
+        tool_l = call.name.lower()
+        side_effect = _name_matches_any(tool_l, self.policy.side_effect_tools)
+        details["side_effect_tool"] = side_effect
+        # Critical low similarity: full weight for embeddings/llm, or for lite
+        # when the planned tool is a side-effect sink (write/send/transfer/…).
+        # Pure lite mismatch on benign tools (notes.write, weather) stays soft
+        # so utility FPs stay rare — S2 provenance remains the primary signal.
+        if sim <= min_sim and (backend != "lite" or side_effect):
+            scale = 1.0
+            details["critical_mismatch"] = True
+        elif backend == "lite":
+            scale = 0.55
+        else:
+            scale = 1.0
         score = float(min(1.0, max(0.0, mismatch * scale)))
         details["scaled_score"] = score
+        details["scale"] = scale
 
-        if score >= 0.45:
+        if score >= 0.45 or details.get("critical_mismatch"):
             reasons.append(f"s3:intent_mismatch:sim={sim:.2f}")
 
         elapsed = (time.perf_counter() - start) * 1000

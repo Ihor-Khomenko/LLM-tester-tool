@@ -329,10 +329,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cap new provider calls this run",
     )
     ab.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between provider requests (rate-limit friendliness)",
+    )
+    ab.add_argument(
         "--max-retries",
         type=int,
-        default=5,
-        help="Retries on HTTP 429 (default 5)",
+        default=1,
+        help="Retries on HTTP 429 (default 1 — keep free-tier quota)",
+    )
+    ab.add_argument(
+        "--suite",
+        default="builtin",
+        choices=["builtin", "msr", "jsonl", "injecagent", "agentdojo", "all"],
+        help="Scenario suite (agentdojo is a scaffold; msr/jsonl need --scenarios-path)",
+    )
+    ab.add_argument(
+        "--scenarios-path",
+        type=Path,
+        default=None,
+        help="JSONL path for suite=msr|jsonl|all (v1 or mcp-security-research 1.0)",
+    )
+    ab.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Cap number of scenarios loaded",
     )
     ab.add_argument(
         "--temperature",
@@ -441,7 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_guard_eval(args: argparse.Namespace) -> int:
     from llm_tester.agent.eval import evaluate_traces, format_metrics
     from llm_tester.agent.provider_adapter import build_llm_chat
-    from llm_tester.agent.traces import resolve_traces
+    from llm_tester.agent.traces import TraceSchemaError, resolve_traces
     from llm_tester.sentinel.guard import build_sentinel
     from llm_tester.sentinel.policy import load_policy
 
@@ -455,6 +479,9 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    except TraceSchemaError as exc:
+        print(f"Trace schema error: {exc}", file=sys.stderr)
+        return 2
     except Exception as exc:
         print(f"Failed to load traces: {exc}", file=sys.stderr)
         return 1
@@ -596,10 +623,26 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_agent_bench(args: argparse.Namespace) -> int:
-    from llm_tester.agent.agent_bench import DEFAULT_SCENARIOS, run_agent_bench
+    from llm_tester.agent.agent_bench import load_scenarios, run_agent_bench
     from llm_tester.agent.provider_adapter import build_llm_chat
+    from llm_tester.agent.traces import TraceSchemaError
     from llm_tester.sentinel.guard import build_sentinel
     from llm_tester.sentinel.policy import load_policy
+
+    try:
+        scenarios = load_scenarios(
+            suite=args.suite,
+            path=args.scenarios_path,
+            limit=args.limit,
+            include_builtin=args.suite in ("builtin", "default", "all"),
+        )
+    except (FileNotFoundError, TraceSchemaError, ValueError, NotImplementedError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if not scenarios:
+        print("No scenarios loaded.", file=sys.stderr)
+        return 1
 
     provider = build_llm_chat(
         args.provider,
@@ -619,6 +662,11 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
             policy.enable_s4 = True
         guard = build_sentinel(policy=policy, llm_provider=provider)
 
+    print(
+        f"agent-bench suite={args.suite} scenarios={len(scenarios)} "
+        f"guard={with_guard} delay={args.delay}s max_retries={args.max_retries}",
+        file=sys.stderr,
+    )
     run_dir = prepare_run_dir(
         args,
         "agent-bench",
@@ -642,7 +690,7 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
 
     out_path = args.out or work_jsonl
     summary = run_agent_bench(
-        DEFAULT_SCENARIOS,
+        scenarios,
         provider,
         out_path=out_path,
         with_guard=with_guard,
@@ -651,6 +699,7 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
         policy_path=args.policy,
         guard=guard,
         llm_provider=provider if with_guard else None,
+        delay=args.delay,
     )
 
     # Compress working JSONL into results.jsonl.gz
@@ -696,6 +745,10 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
     )
     print(f"Run artefacts written to {run_dir}")
     print(json.dumps(summary, indent=2))
+    print(
+        f"provider_requests_used={summary.get('provider_requests', 0)}",
+        file=sys.stderr,
+    )
     return 0
 
 

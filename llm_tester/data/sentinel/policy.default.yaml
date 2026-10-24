@@ -36,6 +36,10 @@ side_effect_tools:
   - email
   - http
   - post
+  - write_file
+  - writefile
+  - upload
+  - download
 
 s3_block_threshold: 0.65
 s3_min_similarity: 0.25

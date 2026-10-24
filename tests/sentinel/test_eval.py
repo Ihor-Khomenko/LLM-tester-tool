@@ -33,10 +33,13 @@ def test_evaluate_synthetic_reasonable_metrics():
     assert metrics.latency_p95_ms is not None
     # Cascade without S4 should stay in the tens of ms range even on CI.
     assert metrics.latency_p95_ms < 100.0
+    assert metrics.by_checkpoint
+    assert "detection_rule" in metrics.to_dict()
 
     text = format_metrics(metrics)
     assert "TPR=" in text
     assert "ASR" in text
+    assert "checkpoint" in text.lower() or "First detection" in text
 
 
 def test_ablation_no_s2_hurts_tpr_on_taint_heavy_set():

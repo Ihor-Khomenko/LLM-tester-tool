@@ -211,7 +211,9 @@ class SentinelGuard:
             )
 
         risk, reasons = aggregate_risk(stage_scores, self.policy)
-        decision = decide_from_risk(risk, self.policy)
+        decision = decide_from_risk(
+            risk, self.policy, stage_scores=stage_scores
+        )
         escalated = False
         final_stage = "cascade"
 
@@ -233,14 +235,13 @@ class SentinelGuard:
                 self.policy,
                 has_s4_verdict=True,
                 s4_score=s4.score,
+                stage_scores=stage_scores,
             )
             final_stage = "S4"
         elif decision == Decision.ESCALATE:
-            # No judge available: conservative mid-threshold policy already applied
-            # by decide_from_risk when enable_s4 is false; if enable_s4 but unavailable:
-            mid = (self.policy.tau_low + self.policy.tau_high) / 2.0
-            decision = Decision.BLOCK if risk >= mid else Decision.ALLOW
-            reasons = list(reasons) + ["s4:skipped"]
+            # S4 requested but unavailable → fail closed (block).
+            decision = Decision.BLOCK
+            reasons = list(reasons) + ["s4:unavailable_fail_closed"]
             final_stage = "cascade"
 
         # Dominant stage for reporting.
