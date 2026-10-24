@@ -200,18 +200,36 @@ class SentinelGuard:
             self.set_user_task(user_request)
 
         stage_scores: List[StageScore] = []
+        spec = self.registry.lookup_spec(call.name)
+        description = spec.description if spec else ""
+        input_schema = spec.input_schema if spec else None
 
         if self.policy.enable_s1:
-            stage_scores.append(self.rules.scan_call(call))
+            stage_scores.append(
+                self.rules.scan_call(
+                    call, user_request=self.store.user_request
+                )
+            )
         if self.policy.enable_s2:
-            stage_scores.append(self.taint.score_call(call))
+            stage_scores.append(
+                self.taint.score_call(
+                    call, description=description, input_schema=input_schema
+                )
+            )
         if self.policy.enable_s3 and self.intent is not None:
             stage_scores.append(
-                self.intent.score_call(self.store.user_request, call)
+                self.intent.score_call(
+                    self.store.user_request,
+                    call,
+                    description=description,
+                    input_schema=input_schema,
+                )
             )
 
         risk, reasons = aggregate_risk(stage_scores, self.policy)
-        decision = decide_from_risk(risk, self.policy)
+        decision = decide_from_risk(
+            risk, self.policy, stage_scores=stage_scores
+        )
         escalated = False
         final_stage = "cascade"
 
@@ -233,14 +251,13 @@ class SentinelGuard:
                 self.policy,
                 has_s4_verdict=True,
                 s4_score=s4.score,
+                stage_scores=stage_scores,
             )
             final_stage = "S4"
         elif decision == Decision.ESCALATE:
-            # No judge available: conservative mid-threshold policy already applied
-            # by decide_from_risk when enable_s4 is false; if enable_s4 but unavailable:
-            mid = (self.policy.tau_low + self.policy.tau_high) / 2.0
-            decision = Decision.BLOCK if risk >= mid else Decision.ALLOW
-            reasons = list(reasons) + ["s4:skipped"]
+            # S4 requested but unavailable → fail closed (block).
+            decision = Decision.BLOCK
+            reasons = list(reasons) + ["s4:unavailable_fail_closed"]
             final_stage = "cascade"
 
         # Dominant stage for reporting.

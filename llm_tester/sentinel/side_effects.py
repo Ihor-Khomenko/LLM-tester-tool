@@ -1,0 +1,260 @@
+"""Generic side-effect / sensitive-resource classification (no fixture tool names)."""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+# Strong verbs: name-segment match alone implies side effects.
+STRONG_SIDE_EFFECT_VERBS: Tuple[str, ...] = (
+    "delete",
+    "remove",
+    "rm",
+    "unlink",
+    "send",
+    "email",
+    "mail",
+    "transfer",
+    "wire",
+    "pay",
+    "upload",
+    "download",
+    "exec",
+    "execute",
+    "shell",
+    "bash",
+    "grant",
+    "revoke",
+    "chmod",
+    "chown",
+)
+
+# Weak verbs need a file/network/schema cue (avoids notes.write FPs).
+WEAK_SIDE_EFFECT_VERBS: Tuple[str, ...] = (
+    "write",
+    "create",
+    "update",
+    "post",
+    "put",
+    "fetch",
+    "http",
+    "request",
+    "run",
+    "command",
+    "move",
+    "rename",
+    "copy",
+    "mv",
+    "cp",
+)
+
+DEFAULT_SIDE_EFFECT_VERBS: Tuple[str, ...] = (
+    STRONG_SIDE_EFFECT_VERBS + WEAK_SIDE_EFFECT_VERBS
+)
+
+_FILEISH_SEGMENTS = frozenset(
+    {
+        "file",
+        "files",
+        "filepath",
+        "path",
+        "disk",
+        "fs",
+        "blob",
+        "object",
+        "document",
+        "doc",
+        "attachment",
+    }
+)
+
+_DESC_SIDE_EFFECT = re.compile(
+    r"\b("
+    r"write\s+(?:a\s+)?file|overwrite|delete\s+file|remove\s+file|"
+    r"send\s+(?:an?\s+)?email|transfer\s+funds|wire\s+money|"
+    r"execute|run\s+command|shell\s+command|upload|download|"
+    r"http\s+request|grant\s+access|revoke|post\s+to\s+https?://"
+    r")\b",
+    re.IGNORECASE,
+)
+
+SENSITIVE_PATH_PATTERNS: Tuple[re.Pattern, ...] = (
+    re.compile(r"(?:^|[/\\])\.ssh(?:[/\\]|$)", re.I),
+    re.compile(r"(?:^|[/\\])\.aws(?:[/\\]|$)", re.I),
+    re.compile(r"(?:^|[/\\])\.gnupg(?:[/\\]|$)", re.I),
+    re.compile(r"(?:^|[/\\])\.kube(?:[/\\]|$)", re.I),
+    re.compile(r"(?:^|[/\\])\.docker(?:[/\\]|$)", re.I),
+    re.compile(r"/etc/(?:passwd|shadow|sudoers|master\.passwd)\b", re.I),
+    re.compile(r"(?:^|[/\\])(?:id_rsa|id_dsa|id_ed25519|id_ecdsa)(?:\b|\.)", re.I),
+    re.compile(r"\.(?:pem|p12|pfx|key)\b", re.I),
+    re.compile(r"(?:^|[/\\])\.env(?:\b|$)", re.I),
+    re.compile(r"(?:^|[/\\])credentials(?:\b|\.)", re.I),
+    re.compile(r"(?:^|[/\\])(?:secrets?|private[_-]?keys?)(?:[/\\]|$)", re.I),
+    re.compile(r"/proc/(?:self/environ|cmdline)\b", re.I),
+)
+
+PATH_TRAVERSAL_RE = re.compile(r"(?:^|[/\\])\.\.(?:[/\\]|$)")
+
+_PATH_ARG_NAMES = frozenset(
+    {
+        "path",
+        "filepath",
+        "filename",
+        "file",
+        "uri",
+        "resource",
+        "target",
+        "src",
+        "source",
+        "dst",
+        "dest",
+        "destination",
+        "location",
+    }
+)
+
+
+def _segments(name: str) -> set:
+    return {p for p in re.split(r"[._\-\s/]+", (name or "").lower()) if p}
+
+
+def _schema_keys(input_schema: Optional[Dict[str, Any]]) -> set:
+    if not input_schema or not isinstance(input_schema, dict):
+        return set()
+    props = input_schema.get("properties")
+    if isinstance(props, dict):
+        return {str(k).lower() for k in props.keys()}
+    return {str(k).lower() for k in input_schema.keys()}
+
+
+def name_matches_verbs(tool_name: str, verbs: Sequence[str]) -> bool:
+    """True if a tool name segment equals a side-effect verb (not bare substring)."""
+    parts = _segments(tool_name)
+    tool_l = (tool_name or "").lower()
+    for raw in verbs:
+        v = raw.lower().strip()
+        if not v:
+            continue
+        if v in parts or tool_l == v:
+            return True
+        if ("_" in v or "." in v) and v in tool_l:
+            return True
+    return False
+
+
+def _schema_implies_side_effect(keys: set) -> bool:
+    """Paired sinks only — ``body`` alone must not mark notes.write as side-effect."""
+    has_path = bool(keys & {"path", "filepath", "filename", "file"})
+    has_content = bool(keys & {"content", "data", "payload", "text", "bytes"})
+    has_recipient = bool(keys & {"to", "recipient", "email", "iban", "account"})
+    has_body = bool(keys & {"body", "message", "content"})
+    has_cmd = bool(keys & {"command", "cmd", "script", "code"})
+    has_url = bool(keys & {"url", "uri", "href", "endpoint"})
+    if has_path and has_content:
+        return True
+    if has_recipient and has_body:
+        return True
+    if has_cmd:
+        return True
+    if has_url and has_body:
+        return True
+    return False
+
+
+def is_side_effect_tool(
+    tool_name: str,
+    *,
+    description: str = "",
+    input_schema: Optional[Dict[str, Any]] = None,
+    verbs: Optional[Sequence[str]] = None,
+    arguments: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Heuristic side-effect classification from name / description / schema.
+
+    Does **not** hard-code fixture tool ids. Weak verbs like ``write`` need a
+    file/network cue so ``notes.write`` (title/body) stays non-side-effect.
+    """
+    all_verbs = list(verbs) if verbs is not None else list(DEFAULT_SIDE_EFFECT_VERBS)
+    strong = [v for v in all_verbs if v.lower() in STRONG_SIDE_EFFECT_VERBS]
+    weak = [v for v in all_verbs if v.lower() in WEAK_SIDE_EFFECT_VERBS]
+    # Anything else in config treated as strong.
+    for v in all_verbs:
+        if v not in strong and v not in weak:
+            strong.append(v)
+
+    if name_matches_verbs(tool_name, strong):
+        return True
+
+    parts = _segments(tool_name)
+    if name_matches_verbs(tool_name, weak):
+        if parts & _FILEISH_SEGMENTS:
+            return True
+        keys = _schema_keys(input_schema)
+        if _schema_implies_side_effect(keys):
+            return True
+        if arguments:
+            arg_keys = {str(k).lower() for k in arguments.keys()}
+            if _schema_implies_side_effect(arg_keys):
+                return True
+        # write_file / writefile style without schema: fileish substring.
+        if re.search(r"(?:^|[._-])file(?:$|[._-])", (tool_name or "").lower()):
+            return True
+
+    if description and _DESC_SIDE_EFFECT.search(description):
+        return True
+
+    if _schema_implies_side_effect(_schema_keys(input_schema)):
+        return True
+
+    return False
+
+
+def looks_like_path_arg(name: str) -> bool:
+    key = name.lower().strip()
+    if key in _PATH_ARG_NAMES:
+        return True
+    return any(s in key for s in ("path", "file", "uri", "resource", "location"))
+
+
+def sensitive_path_hits(value: str) -> list:
+    text = str(value or "")
+    hits = []
+    for pat in SENSITIVE_PATH_PATTERNS:
+        if pat.search(text):
+            hits.append(pat.pattern)
+    if PATH_TRAVERSAL_RE.search(text) and (
+        hits or re.search(r"(?:etc|ssh|home|users|root)", text, re.I)
+    ):
+        hits.append("path_traversal")
+    return hits
+
+
+def unauthorized_sensitive_paths(
+    arguments: Dict[str, Any],
+    user_request: str,
+) -> list:
+    """
+    Path-like args that look sensitive and are not authorized by the user text.
+
+    Authorization = the sensitive path (or a distinctive basename) appears in
+    the user request. Generic — not tied to specific tool names.
+    """
+    user_l = (user_request or "").lower()
+    findings = []
+    for key, raw in (arguments or {}).items():
+        value = raw if isinstance(raw, str) else str(raw)
+        if not looks_like_path_arg(key) and not (
+            "/" in value or "\\" in value or value.startswith("~")
+        ):
+            continue
+        hits = sensitive_path_hits(value)
+        if not hits:
+            continue
+        basename = re.split(r"[/\\]", value.rstrip("/\\"))[-1].lower()
+        authorized = value.lower() in user_l or (
+            bool(basename) and len(basename) >= 4 and basename in user_l
+        )
+        if not authorized:
+            findings.append({"arg": key, "value": value, "hits": hits})
+    return findings

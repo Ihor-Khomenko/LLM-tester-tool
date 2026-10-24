@@ -6,7 +6,7 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
 - **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
 - **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
@@ -220,17 +220,21 @@ llmtest guard-eval --dataset synthetic \
 # InjecAgent (verified downloadable from GitHub raw; 510 dh_base cases)
 llmtest guard-eval --dataset injecagent --download-injecagent --limit 100
 
-# External JSONL from mcp-security-research (tool poisoning / rug pull / IPI)
+# External JSONL — native v1 *or* mcp-security-research export schema 1.0
 llmtest guard-eval --dataset jsonl --dataset-path scenarios.jsonl
 llmtest guard-eval --dataset jsonl \
-  --dataset-path llm_tester/data/agent/msr_examples.jsonl
+  --dataset-path llm_tester/data/agent/msr_schema10_examples.jsonl
 
 # Optional S3/S4 via any provider (not used in CI)
 llmtest guard-eval --dataset synthetic --enable-s4 \
   --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free
 ```
 
-Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`), shared with the parallel exporter in [mcp-security-research](https://github.com/Ihor-Khomenko/mcp-security-research).
+# Calibrate tau_low/tau_high on a train split; evaluate held-out (split recorded in --out)
+llmtest guard-calibrate --dataset synthetic --split-by attack_type \
+  --train-frac 0.5 --seed 0 --out guard_calibrate.json
+
+Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`, plus auto-adapter for research export `1.0`). Unknown schemas fail loudly. Metrics report **symmetric** any-intervention (block|ask_user|sanitize) and block-only TPR/FPR. Risk uses noisy-OR over enabled stages (ablations are monotone).
 
 Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95 into `metrics.json` + `results.jsonl.gz`. Numbers from a run are **measured preliminary results**, not published claims.
 
@@ -240,13 +244,17 @@ Simple ReAct-style tool agent (toy local tools) with/without the guard. Uses the
 
 ```sh
 llmtest agent-bench --provider ollama --model qwen2.5:7b \
-  --max-requests 20 --resume --out agent_bench.jsonl
+  --suite builtin --max-requests 20 --delay 1 --max-retries 1 \
+  --resume --out agent_bench.jsonl
 llmtest agent-bench --provider openrouter \
-  --model meta-llama/llama-3.2-3b-instruct:free \
-  --enable-s4 --max-requests 40 --resume --out agent_or.jsonl
+  --model nvidia/nemotron-3.5-lightning:free \
+  --suite msr --scenarios-path scenarios.jsonl \
+  --max-requests 40 --delay 2 --max-retries 1 --resume --out agent_or.jsonl
 llmtest agent-bench --provider ollama --model qwen2.5:7b --without-guard \
-  --max-requests 20 --resume --out agent_bench_raw.jsonl
+  --suite builtin --max-requests 20 --resume --out agent_bench_raw.jsonl
 ```
+
+`--max-retries` defaults to **1** (avoid burning free-tier quota on 429). stderr logs `provider_requests_used`. Suites: `builtin` (benign+attack), `msr`/`jsonl`, `injecagent`, `agentdojo` (scaffold).
 
 ### MCP stdio proxy
 

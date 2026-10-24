@@ -54,6 +54,7 @@ class ToolRecord:
     description_hash: str
     input_schema_hash: str
     full_hash: str
+    input_schema: Optional[dict] = None
     pinned: bool = True
 
 
@@ -71,6 +72,7 @@ class ToolRegistry:
             description_hash=sha256_text(tool.description),
             input_schema_hash=sha256_text(str(tool.input_schema or {})),
             full_hash=sha256_text(full),
+            input_schema=dict(tool.input_schema) if tool.input_schema else None,
             pinned=True,
         )
         self.tools[tool.name] = rec
@@ -78,6 +80,16 @@ class ToolRegistry:
 
     def get(self, name: str) -> Optional[ToolRecord]:
         return self.tools.get(name)
+
+    def lookup_spec(self, name: str) -> Optional[ToolSpec]:
+        rec = self.tools.get(name)
+        if rec is None:
+            return None
+        return ToolSpec(
+            name=rec.name,
+            description=rec.description,
+            input_schema=rec.input_schema,
+        )
 
     def check(
         self,

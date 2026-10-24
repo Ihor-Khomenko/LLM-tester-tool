@@ -22,6 +22,13 @@ def test_parse_action_and_final():
     assert action["name"] == "notes.read"
     assert action["arguments"]["note_id"] == "note:1"
 
+    # Pilot: models often omit the colon after Action Input.
+    no_colon = parse_agent_output(
+        'Action: notes.read\nAction Input {"note_id": "note:evil"}'
+    )
+    assert no_colon["type"] == "action"
+    assert no_colon["arguments"]["note_id"] == "note:evil"
+
     final = parse_agent_output("Final Answer: all good")
     assert final["type"] == "final"
     assert "all good" in final["text"]

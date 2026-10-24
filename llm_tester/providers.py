@@ -45,6 +45,8 @@ class LLMProvider:
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
+        # Last chat() attempt count (incl. 429 retries) for --max-requests.
+        self.last_attempts: int = 0
         # Disable the SDK's own retries so we control 429 backoff centrally.
         self._client = OpenAI(
             api_key=cfg["api_key"],
@@ -79,6 +81,7 @@ class LLMProvider:
         start = time.perf_counter()
         while True:
             attempt += 1
+            self.last_attempts = attempt
             try:
                 response = self._client.chat.completions.create(**kwargs)
                 latency = time.perf_counter() - start
@@ -97,6 +100,8 @@ class LLMProvider:
                     status = getattr(exc.response, "status_code", None)
                 is_rate_limited = isinstance(exc, RateLimitError) or status == 429
                 if not is_rate_limited or attempt > self.max_retries:
+                    # Exhausted / non-429: still record attempts for budgeting.
+                    self.last_attempts = attempt
                     raise
                 delay = self._backoff_seconds(attempt, exc)
                 time.sleep(delay)

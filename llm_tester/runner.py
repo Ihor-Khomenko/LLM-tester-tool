@@ -204,6 +204,7 @@ def run_evaluation(
                 category=item.category,
             )
 
+            counted_attempts = False
             try:
                 g_in = guard.scan_input(item.prompt)
                 record.input_scores = g_in.input_scores
@@ -220,7 +221,9 @@ def run_evaluation(
                     summary.refusals += 1
                 else:
                     chat = provider.chat(g_in.sanitized_prompt)
-                    summary.requests += 1
+                    # Count every HTTP attempt (incl. 429 retries) toward budget.
+                    summary.requests += int(getattr(chat, "attempts", 1) or 1)
+                    counted_attempts = True
                     made_request = True
                     record.latency_s = chat.latency_s
                     summary.latencies.append(chat.latency_s)
@@ -258,6 +261,12 @@ def run_evaluation(
                     print(f"Response: {record.response}\n")
 
             except Exception as exc:  # noqa: BLE001 — research harness logs all failures
+                # Budget 429 retries even when the final attempt raises.
+                if not counted_attempts:
+                    attempts = int(getattr(provider, "last_attempts", 0) or 0)
+                    if attempts > 0:
+                        summary.requests += attempts
+                        made_request = True
                 record.error = str(exc)
                 record.status = "error"
                 record.response = None
