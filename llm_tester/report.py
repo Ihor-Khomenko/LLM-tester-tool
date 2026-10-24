@@ -56,6 +56,13 @@ class ReportStats:
 
 
 def _iter_records(path: Path) -> Iterable[Dict[str, Any]]:
+    # Prefer shared gzip/plain JSONL reader used by run artifacts.
+    if str(path).endswith(".gz") or path.suffix == ".jsonl":
+        from llm_tester.artifacts import iter_jsonl_records
+
+        yield from iter_jsonl_records(path)
+        return
+
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         return
@@ -70,10 +77,6 @@ def _iter_records(path: Path) -> Iterable[Dict[str, Any]]:
             if isinstance(obj, dict):
                 rows.append(obj)
         return rows
-
-    if path.suffix == ".jsonl":
-        yield from _from_jsonl(text)
-        return
 
     # Heuristic: multi-line file where each non-empty line is a JSON object
     if "\n" in text and text.lstrip().startswith("{"):

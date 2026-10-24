@@ -106,23 +106,10 @@ class JSONLWriter:
 
 
 def load_completed_ids(path: Path) -> Set[str]:
-    """Return prompt ids already present in a JSONL results file."""
-    done: Set[str] = set()
-    if not path.exists():
-        return done
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            pid = rec.get("id")
-            if pid is not None:
-                done.add(str(pid))
-    return done
+    """Return prompt ids already present in a JSONL / JSONL.GZ results file."""
+    from llm_tester.artifacts import load_completed_ids_from_results
+
+    return load_completed_ids_from_results(path, id_keys=("id",))
 
 
 def run_evaluation(

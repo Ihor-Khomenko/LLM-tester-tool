@@ -1,4 +1,4 @@
-"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``agent-bench``."""
+"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``agent-bench``, ``index``, ``compare``."""
 
 from __future__ import annotations
 
@@ -6,8 +6,23 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from llm_tester.artifacts import (
+    DEFAULT_RUNS_ROOT,
+    RESULTS_PLAIN,
+    collect_env,
+    compare_metrics,
+    ensure_plain_jsonl_for_resume,
+    finalize_run,
+    format_compare_markdown,
+    format_compare_table,
+    load_run,
+    parse_extra_sha,
+    resolve_run_dir,
+    write_compare_csv,
+    write_index,
+)
 from llm_tester.config import (
     DEFAULT_SEED,
     DEFAULT_TEMPERATURE,
@@ -26,6 +41,70 @@ from llm_tester.providers import LLMProvider
 from llm_tester.range_utils import parse_range_spec
 from llm_tester.report import format_report, summarise
 from llm_tester.runner import print_summary, run_evaluation
+
+
+def _add_artifact_args(parser: argparse.ArgumentParser) -> None:
+    """Shared reproducible-run artifact flags."""
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory for run artifacts (config.yaml, env.json, results.jsonl.gz, "
+            f"metrics.json, README.md). Default: {DEFAULT_RUNS_ROOT}/<date>_<name>"
+        ),
+    )
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help="Name segment for the default --run-dir (runs/<date>_<name>)",
+    )
+    parser.add_argument(
+        "--runs-root",
+        type=Path,
+        default=DEFAULT_RUNS_ROOT,
+        help=f"Root for auto run dirs (default: {DEFAULT_RUNS_ROOT})",
+    )
+    parser.add_argument(
+        "--extra-sha",
+        action="append",
+        default=[],
+        metavar="NAME=SHA|PATH",
+        help=(
+            "Record an extra git SHA in env.json (repeatable). "
+            "Forms: name=sha, name=/path/to/repo, or /path/to/repo "
+            "(e.g. mcp-security-research)"
+        ),
+    )
+
+
+def _parse_extra_shas(specs: Sequence[str]) -> List[Tuple[str, str]]:
+    out: List[Tuple[str, str]] = []
+    for spec in specs or []:
+        try:
+            out.append(parse_extra_sha(spec))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            raise
+    return out
+
+
+def _namespace_to_config(args: argparse.Namespace, *, command: str, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Serialize CLI namespace to config.yaml payload (paths as strings; no secrets)."""
+    cfg: Dict[str, Any] = {"command": command}
+    skip = {"command"}
+    for key, val in sorted(vars(args).items()):
+        if key in skip:
+            continue
+        if isinstance(val, Path):
+            cfg[key] = str(val)
+        elif isinstance(val, list) and val and isinstance(val[0], Path):
+            cfg[key] = [str(v) for v in val]
+        else:
+            cfg[key] = val
+    if extra:
+        cfg.update(extra)
+    return cfg
 
 
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
@@ -89,9 +168,13 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("results.jsonl"),
-        help="JSONL output path (every response is logged)",
+        default=None,
+        help=(
+            "JSONL output path during the run (default: <run-dir>/results.jsonl; "
+            "finalized as results.jsonl.gz in the run directory)"
+        ),
     )
+    _add_artifact_args(parser)
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -250,6 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ge.add_argument("--no-seed", action="store_true")
+    _add_artifact_args(ge)
 
     ab = sub.add_parser(
         "agent-bench",
@@ -298,8 +382,11 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument(
         "--out",
         type=Path,
-        default=Path("agent_bench.jsonl"),
-        help="JSONL output path",
+        default=None,
+        help=(
+            "JSONL output path during the run (default: <run-dir>/results.jsonl; "
+            "finalized as results.jsonl.gz)"
+        ),
     )
     ab.add_argument(
         "--resume",
@@ -325,6 +412,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ab.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ab.add_argument("--no-seed", action="store_true")
+    _add_artifact_args(ab)
+
+    idx = sub.add_parser(
+        "index",
+        help="Build index.csv from a runs root (thesis experiments/runs/)",
+    )
+    idx.add_argument(
+        "runs_root",
+        type=Path,
+        nargs="?",
+        default=DEFAULT_RUNS_ROOT,
+        help=f"Root directory containing run dirs (default: {DEFAULT_RUNS_ROOT})",
+    )
+    idx.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output CSV path (default: <runs-root>/index.csv)",
+    )
+
+    cmp = sub.add_parser(
+        "compare",
+        help="Diff metrics.json across two or more run directories",
+    )
+    cmp.add_argument(
+        "runs",
+        nargs="+",
+        type=Path,
+        help="Run directories to compare (at least two recommended)",
+    )
+    cmp.add_argument(
+        "--markdown",
+        type=Path,
+        default=None,
+        help="Optional markdown table output path (thesis tables)",
+    )
+    cmp.add_argument(
+        "--csv",
+        type=Path,
+        default=None,
+        help="Optional CSV output path (thesis tables)",
+    )
+    cmp.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit comparison rows as JSON",
+    )
 
     sp = sub.add_parser(
         "sentinel-proxy",
@@ -347,6 +481,11 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
     from llm_tester.agent.traces import resolve_traces
     from llm_tester.sentinel.guard import build_sentinel
     from llm_tester.sentinel.policy import load_policy
+
+    try:
+        extra_shas = _parse_extra_shas(args.extra_sha)
+    except ValueError:
+        return 2
 
     try:
         traces = resolve_traces(
@@ -410,8 +549,44 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
             policy.s3_backend = "lite"
         policy.enable_s4 = False
 
-    guard = build_sentinel(policy=policy, llm_provider=llm, log_path=args.log)
-    metrics = evaluate_traces(traces, guard)
+    run_dir = resolve_run_dir(
+        args.run_dir,
+        run_name=args.run_name,
+        runs_root=args.runs_root,
+        command="guard-eval",
+        dataset=args.dataset,
+        provider=args.provider,
+        model=args.model,
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    log_path = args.log
+    if log_path is None:
+        log_path = run_dir / "decisions.jsonl"
+
+    guard = build_sentinel(policy=policy, llm_provider=llm, log_path=log_path)
+    metrics = evaluate_traces(traces, guard, collect_records=True)
+
+    config = _namespace_to_config(
+        args,
+        command="guard-eval",
+        extra={"thresholds": policy.to_dict(), "run_dir": str(run_dir)},
+    )
+    env = collect_env(
+        command="guard-eval",
+        provider=args.provider,
+        model=args.model,
+        extra_shas=extra_shas,
+    )
+    art = finalize_run(
+        run_dir,
+        config=config,
+        env=env,
+        metrics=metrics.to_dict(),
+        results_records=metrics.records,
+    )
+    print(f"Run artifacts written to {art.run_dir}")
+
     if args.json:
         print(json.dumps(metrics.to_dict(), indent=2))
     else:
@@ -441,6 +616,11 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
     from llm_tester.sentinel.guard import build_sentinel
     from llm_tester.sentinel.policy import load_policy
 
+    try:
+        extra_shas = _parse_extra_shas(args.extra_sha)
+    except ValueError:
+        return 2
+
     provider = build_llm_chat(
         args.provider,
         args.model,
@@ -451,18 +631,35 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
     )
     with_guard = not args.without_guard
     guard = None
-    if with_guard and (args.enable_s4 or args.s3_backend):
+    policy_dict: Dict[str, Any] = {}
+    if with_guard:
         policy = load_policy(args.policy)
         if args.s3_backend:
             policy.s3_backend = args.s3_backend
         if args.enable_s4:
             policy.enable_s4 = True
-        guard = build_sentinel(policy=policy, llm_provider=provider)
+        policy_dict = policy.to_dict()
+        if args.enable_s4 or args.s3_backend:
+            guard = build_sentinel(policy=policy, llm_provider=provider)
+
+    run_dir = resolve_run_dir(
+        args.run_dir,
+        run_name=args.run_name,
+        runs_root=args.runs_root,
+        command="agent-bench",
+        provider=args.provider,
+        model=args.model,
+        dataset="with-guard" if with_guard else "without-guard",
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.out or (run_dir / RESULTS_PLAIN)
+    if args.resume:
+        out_path = ensure_plain_jsonl_for_resume(run_dir, out_path)
 
     summary = run_agent_bench(
         DEFAULT_SCENARIOS,
         provider,
-        out_path=args.out,
+        out_path=out_path,
         with_guard=with_guard,
         resume=args.resume,
         max_requests=args.max_requests,
@@ -470,7 +667,82 @@ def cmd_agent_bench(args: argparse.Namespace) -> int:
         guard=guard,
         llm_provider=provider if with_guard else None,
     )
+    # Derive rates for metrics.json
+    evaluated = max(0, summary.get("total", 0) - summary.get("errors", 0))
+    metrics = {
+        **summary,
+        "evaluated": evaluated,
+        "attack_success_rate": (
+            (summary["attack_successes"] / evaluated) if evaluated else None
+        ),
+        "block_rate": (summary["blocked"] / evaluated) if evaluated else None,
+        "guard_enabled": with_guard,
+    }
+    config = _namespace_to_config(
+        args,
+        command="agent-bench",
+        extra={
+            "thresholds": policy_dict,
+            "run_dir": str(run_dir),
+            "with_guard": with_guard,
+        },
+    )
+    env = collect_env(
+        command="agent-bench",
+        provider=args.provider,
+        model=args.model,
+        extra_shas=extra_shas,
+    )
+    art = finalize_run(
+        run_dir,
+        config=config,
+        env=env,
+        metrics=metrics,
+        results_jsonl=out_path,
+        remove_plain_results=out_path.parent == run_dir,
+    )
+    print(f"Run artifacts written to {art.run_dir}")
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_index(args: argparse.Namespace) -> int:
+    root = Path(args.runs_root)
+    if not root.exists():
+        print(f"Runs root not found: {root}", file=sys.stderr)
+        return 1
+    out = write_index(root, out=args.out)
+    print(f"Wrote {out}")
+    return 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    if len(args.runs) < 1:
+        print("Provide at least one run directory.", file=sys.stderr)
+        return 2
+    arts = []
+    for p in args.runs:
+        try:
+            arts.append(load_run(p))
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except Exception as exc:
+            print(f"Failed to load run {p}: {exc}", file=sys.stderr)
+            return 1
+    rows = compare_metrics(arts)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        print(format_compare_table(arts, rows))
+    if args.markdown:
+        Path(args.markdown).write_text(
+            format_compare_markdown(arts, rows) + "\n", encoding="utf-8"
+        )
+        print(f"Wrote markdown table to {args.markdown}", file=sys.stderr)
+    if args.csv:
+        write_compare_csv(args.csv, arts, rows)
+        print(f"Wrote CSV table to {args.csv}", file=sys.stderr)
     return 0
 
 
@@ -489,6 +761,11 @@ def cmd_sentinel_proxy(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    try:
+        extra_shas = _parse_extra_shas(args.extra_sha)
+    except ValueError:
+        return 2
+
     prompts = load_dataset(
         args.dataset,
         args.dataset_path,
@@ -507,13 +784,29 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     start, end = parsed
     selected = slice_prompts(prompts, start, end)
+
+    run_dir = resolve_run_dir(
+        args.run_dir,
+        run_name=args.run_name,
+        runs_root=args.runs_root,
+        command="run",
+        dataset=args.dataset,
+        provider=args.provider,
+        model=args.model,
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    out_path = args.out or (run_dir / RESULTS_PLAIN)
+    if args.resume:
+        out_path = ensure_plain_jsonl_for_resume(run_dir, out_path)
+
     print(
         f"Dataset={args.dataset} prompts={len(selected)} "
         f"(indices {start}:{end}) provider={args.provider} "
         f"guard={args.guard} judge={args.judge}"
     )
+    print(f"Run directory: {run_dir}")
     if args.resume:
-        print(f"Resume enabled: skipping ids already in {args.out}")
+        print(f"Resume enabled: skipping ids already in {out_path}")
     if args.max_requests is not None:
         print(f"Max new requests this run: {args.max_requests}")
 
@@ -531,6 +824,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
 
     judge_provider = None
+    j_provider_name = None
+    j_model = None
     if args.judge in ("llamaguard", "llm"):
         j_provider_name = args.judge_provider or args.provider
         j_model = args.judge_model
@@ -550,14 +845,60 @@ def cmd_run(args: argparse.Namespace) -> int:
         provider,
         judge=judge,
         guard=guard,
-        out_path=args.out,
+        out_path=out_path,
         verbose=not args.quiet,
         start_number=start + 1,
         resume=args.resume,
         max_requests=args.max_requests,
         delay=args.delay,
     )
-    print_summary(summary, args.out)
+    info = provider.info()
+    metrics = {
+        "total": summary.total,
+        "evaluated": summary.evaluated,
+        "skipped": summary.skipped,
+        "resumed_skipped": summary.resumed_skipped,
+        "errors": summary.errors,
+        "refusals": summary.refusals,
+        "attack_successes": summary.attack_successes,
+        "blocked": summary.blocked,
+        "requests": summary.requests,
+        "stopped_max_requests": summary.stopped_max_requests,
+        "refusal_rate": summary.refusal_rate,
+        "attack_success_rate": summary.attack_success_rate,
+        "mean_latency_s": summary.mean_latency_s,
+    }
+    config = _namespace_to_config(
+        args,
+        command="run",
+        extra={
+            "run_dir": str(run_dir),
+            "params": params.as_dict(),
+            "resolved_model": info.get("model"),
+            "resolved_base_url": info.get("base_url"),
+            "range_start": start,
+            "range_end": end,
+            "n_prompts": len(selected),
+        },
+    )
+    env = collect_env(
+        command="run",
+        provider=args.provider,
+        model=info.get("model") or args.model,
+        judge_provider=j_provider_name,
+        judge_model=j_model,
+        extra_shas=extra_shas,
+    )
+    art = finalize_run(
+        run_dir,
+        config=config,
+        env=env,
+        metrics=metrics,
+        results_jsonl=out_path,
+        remove_plain_results=out_path.parent == run_dir,
+    )
+    print_summary(summary, art.results_path or out_path)
+    print(f"Run artifacts written to {art.run_dir}")
     return 0
 
 
@@ -588,6 +929,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_guard_eval(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
+    if args.command == "index":
+        return cmd_index(args)
+    if args.command == "compare":
+        return cmd_compare(args)
     if args.command == "sentinel-proxy":
         return cmd_sentinel_proxy(args)
     parser.error(f"Unknown command: {args.command}")

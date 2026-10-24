@@ -6,7 +6,8 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest agent-bench`, `llmtest index`, `llmtest compare`, `llmtest sentinel-proxy`
+- **Reproducible run artifacts** — every `run` / `guard-eval` / `agent-bench` writes `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` under `runs/<date>_<name>` (thesis-friendly; see [`docs/run-artifacts.md`](docs/run-artifacts.md))
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
 - Datasets (local and/or Hugging Face, cached under `.cache/llm_tester/`):
   - [HarmfulQA](https://huggingface.co/datasets/declare-lab/HarmfulQA)
@@ -77,7 +78,10 @@ Common options:
 | `--guard` | `none`, `llmguard` | Default `none` |
 | `--judge` | `phrase`, `llamaguard`, `llm` | Default `phrase` |
 | `--range` | `all`, `N`, `start-end` | Half-open `[start, end)` |
-| `--out` | path | JSONL; every response is logged |
+| `--out` | path | Live JSONL during the run (default: `<run-dir>/results.jsonl`) |
+| `--run-dir` | path | Artifact directory (default: `runs/<date>_<name>`) |
+| `--run-name` | str | Name segment for the default `--run-dir` |
+| `--extra-sha` | `name=sha` or path | Extra git SHA in `env.json` (e.g. mcp-security-research) |
 | `--resume` | flag | Skip prompt ids already in `--out`; append new rows |
 | `--max-requests` | int | Cap new provider calls this run (spread daily quotas) |
 | `--delay` | seconds | Sleep between provider requests |
@@ -113,10 +117,34 @@ llmtest run --dataset harmbench --provider ollama --model llama3 --guard llmguar
 
 ```sh
 llmtest report results.jsonl
+llmtest report runs/20261024_baseline/results.jsonl.gz
 llmtest report results.jsonl openai.jsonl --json
 ```
 
 Reports refusal rate, attack success rate, and mean latency (overall and per provider/model).
+
+### Run artifacts, index, and compare
+
+Every evaluation writes a run directory (override with `--run-dir`):
+
+```text
+runs/<YYYYMMDD>_<name>/
+  config.yaml  env.json  results.jsonl.gz  metrics.json  README.md
+```
+
+```sh
+llmtest run --dataset advbench --provider ollama --model llama3 --range 10 \
+  --run-name baseline
+llmtest guard-eval --dataset synthetic --run-name guard-synth \
+  --extra-sha mcp-security-research=abc123
+
+# Catalogue and diff (for thesis tables under experiments/runs/)
+llmtest index runs/
+llmtest compare runs/20261024_baseline runs/20261024_guarded \
+  --markdown diff.md --csv diff.csv
+```
+
+No API keys are written. Full layout notes: [`docs/run-artifacts.md`](docs/run-artifacts.md).
 
 ## MCP-Sentinel (agent / MCP guard)
 
@@ -283,13 +311,18 @@ llmtest run --dataset jailbreakbench --provider openrouter \
 
 # Звіт за метриками (refusal rate / attack success rate / latency)
 llmtest report results.jsonl
+
+# Артефакти прогону → runs/<date>_<name>/; індекс і порівняння
+llmtest index runs/
+llmtest compare runs/A runs/B --markdown diff.md
 ```
 
 Провайдери: `ollama`, `openai`, `xai`, `openrouter`, `groq`.  
 Датасети: `harmfulqa`, `toxicchat`, `advbench`, `harmbench`, `jailbreakbench`, `promptinject`.  
 Захист: `--guard none|llmguard`.  
 Суддя відмови: `--judge phrase|llamaguard|llm`.  
-Квоти: `--max-requests`, `--delay`, `--resume` (пропуск уже записаних id у JSONL).
+Квоти: `--max-requests`, `--delay`, `--resume` (пропуск уже записаних id у JSONL).  
+Артефакти: `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json` (див. `docs/run-artifacts.md`).
 
 ### MCP-Sentinel (українською)
 

@@ -40,6 +40,7 @@ class EvalMetrics:
     asr_without_guard: float = 1.0
     asr_with_guard: float = 0.0
     by_attack_type: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    records: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def tpr(self) -> Optional[float]:
@@ -112,6 +113,7 @@ class EvalMetrics:
             "latency_p50_ms": self.latency_p50_ms,
             "latency_p95_ms": self.latency_p95_ms,
             "by_attack_type": self.by_attack_type,
+            # Per-trace records are written to results.jsonl.gz, not metrics.json.
         }
 
 
@@ -178,15 +180,20 @@ def evaluate_traces(
     guard: Optional[SentinelGuard] = None,
     *,
     policy: Optional[SentinelPolicy] = None,
+    collect_records: bool = False,
 ) -> EvalMetrics:
     """
     Run the cascade on each trace.
 
     Attack label → predicted block = TP; predicted allow = FN.
     Benign label → predicted allow = TN; predicted block = FP.
+
+    When ``collect_records`` is True, per-trace dicts are stored on
+    ``metrics.records`` for run-artifact JSONL output.
     """
     g = guard or build_sentinel(policy=policy)
     metrics = EvalMetrics()
+    records: List[Dict[str, Any]] = []
 
     for trace in traces:
         # Skip completely empty records.
@@ -218,22 +225,41 @@ def evaluate_traces(
             "1",
             "true",
         )
+        outcome = "tn"
         if is_attack:
             metrics.n_attack += 1
             if blocked:
                 metrics.tp += 1
                 bucket["tp"] += 1
+                outcome = "tp"
             else:
                 metrics.fn += 1
                 bucket["fn"] += 1
+                outcome = "fn"
         else:
             metrics.n_benign += 1
             if blocked:
                 metrics.fp += 1
                 bucket["fp"] += 1
+                outcome = "fp"
             else:
                 metrics.tn += 1
                 bucket["tn"] += 1
+                outcome = "tn"
+
+        if collect_records:
+            records.append(
+                {
+                    "id": trace.id,
+                    "label": trace.label,
+                    "attack_type": trace.attack_type,
+                    "blocked": blocked,
+                    "outcome": outcome,
+                    "escalated": escalated,
+                    "latency_ms": latency_ms,
+                    "decision": decision.to_dict(),
+                }
+            )
 
     if metrics.n_attack:
         metrics.asr_without_guard = 1.0
@@ -242,6 +268,8 @@ def evaluate_traces(
         metrics.asr_without_guard = 0.0
         metrics.asr_with_guard = 0.0
 
+    if collect_records:
+        metrics.records = records
     return metrics
 
 

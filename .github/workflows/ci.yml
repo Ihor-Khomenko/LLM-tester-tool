@@ -45,7 +45,12 @@ jobs:
           llmtest report --help
           llmtest guard-eval --help
           llmtest agent-bench --help
+          llmtest index --help
+          llmtest compare --help
           llmtest sentinel-proxy --help
-          llmtest guard-eval --dataset synthetic --json
+          llmtest guard-eval --dataset synthetic --json --run-dir /tmp/ci-ge-synthetic
           llmtest guard-eval --dataset jsonl \
-            --dataset-path llm_tester/data/agent/msr_examples.jsonl --json
+            --dataset-path llm_tester/data/agent/msr_examples.jsonl --json \
+            --run-dir /tmp/ci-ge-msr
+          llmtest index /tmp
+          llmtest compare /tmp/ci-ge-synthetic /tmp/ci-ge-msr --csv /tmp/ci-compare.csv

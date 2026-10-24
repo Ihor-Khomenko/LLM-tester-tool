@@ -33,6 +33,7 @@ def test_cli_run_with_mocks(tmp_path: Path):
         '[{"id":1,"topic":"t","subtopic":"s","question":"bad?"}]',
         encoding="utf-8",
     )
+    run_dir = tmp_path / "run"
     out = tmp_path / "out.jsonl"
 
     mock_provider = MagicMock()
@@ -62,6 +63,8 @@ def test_cli_run_with_mocks(tmp_path: Path):
                 "1",
                 "--out",
                 str(out),
+                "--run-dir",
+                str(run_dir),
                 "--quiet",
             ]
         )
@@ -70,3 +73,5 @@ def test_cli_run_with_mocks(tmp_path: Path):
     text = out.read_text(encoding="utf-8")
     assert "I cannot provide that." in text
     assert '"provider": "ollama"' in text
+    assert (run_dir / "results.jsonl.gz").exists()
+    assert (run_dir / "metrics.json").exists()

@@ -237,22 +237,9 @@ def run_scenario(
 
 
 def load_done_ids(path: Path) -> Set[str]:
-    done: Set[str] = set()
-    if not path.is_file():
-        return done
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            sid = row.get("scenario_id")
-            if sid:
-                done.add(str(sid))
-    return done
+    from llm_tester.artifacts import load_completed_ids_from_results
+
+    return load_completed_ids_from_results(path, id_keys=("scenario_id", "id"))
 
 
 def run_agent_bench(

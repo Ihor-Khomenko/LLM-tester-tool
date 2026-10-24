@@ -19,4 +19,6 @@ test_results.json
 toxicchat_test_results.json
 guarded_results.csv
 guarded_results.jsonl
+# Local experiment runs (archive under thesis experiments/runs/ instead)
+runs/
 .DS_Store
