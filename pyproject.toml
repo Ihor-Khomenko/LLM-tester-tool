@@ -33,6 +33,8 @@ sentinel-all = [
 ]
 # Thesis-ready B/W figures (llmtest figures).
 figures = ["matplotlib>=3.7.0", "numpy>=1.24.0"]
+# PromptGuard 2 baseline (CPU fine). Weights fetched separately — see baselines/README.md.
+baselines-prompt-guard = ["transformers>=4.40.0", "torch"]
 dev = ["pytest>=7.0", "PyYAML>=6.0", "matplotlib>=3.7.0", "numpy>=1.24.0"]
 all = [
     "llm-guard",
@@ -52,7 +54,7 @@ llmtest = "llm_tester.cli:main"
 include = ["llm_tester*"]
 
 [tool.setuptools.package-data]
-llm_tester = ["data/sentinel/*", "data/agent/*"]
+llm_tester = ["data/sentinel/*", "data/agent/*", "baselines/README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

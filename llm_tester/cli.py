@@ -1,4 +1,7 @@
-"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``guard-calibrate``, ``agent-bench``, ``index``, ``compare``, ``figures``."""
+"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
+``baselines-eval``, ``ablation``, ``agentdojo``, ``guard-calibrate``,
+``agent-bench``, ``index``, ``compare``, ``figures``.
+"""
 
 from __future__ import annotations
 
@@ -265,6 +268,70 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ge.add_argument("--no-seed", action="store_true")
     add_run_dir_args(ge, default_name_help="guard-eval_<dataset>")
+
+    be = sub.add_parser(
+        "baselines-eval",
+        help=(
+            "Evaluate pluggable baselines (spotlighting / prompt_guard2 / "
+            "progent / task_shield / sentinel) on the same traces as guard-eval"
+        ),
+    )
+    be.add_argument(
+        "--baseline",
+        required=True,
+        choices=[
+            "spotlighting",
+            "prompt_guard2",
+            "progent",
+            "task_shield",
+            "sentinel",
+        ],
+        help="Defense baseline to evaluate",
+    )
+    be.add_argument(
+        "--dataset",
+        default="synthetic",
+        choices=["synthetic", "injecagent", "jsonl"],
+    )
+    be.add_argument("--dataset-path", type=Path, default=None)
+    be.add_argument(
+        "--download-injecagent",
+        action="store_true",
+        help="Download InjecAgent (needs network; not for CI)",
+    )
+    be.add_argument("--limit", type=int, default=None)
+    be.add_argument(
+        "--spotlight-mode",
+        default="datamark",
+        choices=["datamark", "encode"],
+        help="Spotlighting transform (Hines et al.)",
+    )
+    be.add_argument(
+        "--prompt-guard-model",
+        default=None,
+        help="HF id or local path for PromptGuard 2 (default Llama-Prompt-Guard-2-22M)",
+    )
+    be.add_argument(
+        "--prompt-guard-threshold",
+        type=float,
+        default=0.5,
+        help="Injection score threshold for PromptGuard 2",
+    )
+    be.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="LLM for task_shield / sentinel S3-llm|S4 (ollama recommended)",
+    )
+    be.add_argument("--model", default=None, help="Model id (e.g. qwen2.5:3b)")
+    be.add_argument("--base-url", default=None)
+    be.add_argument("--policy", type=Path, default=None, help="Sentinel policy (baseline=sentinel)")
+    be.add_argument("--json", action="store_true")
+    be.add_argument("--max-retries", type=int, default=5)
+    be.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    be.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    be.add_argument("--no-seed", action="store_true")
+    add_run_dir_args(be, default_name_help="baselines-eval_<baseline>_<dataset>")
 
     ab = sub.add_parser(
         "agent-bench",
@@ -691,6 +758,120 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         print(
             "\nNote: numbers are measured on this run's traces (preliminary). "
             "Not claimed as published results."
+        )
+    return 0
+
+
+def cmd_baselines_eval(args: argparse.Namespace) -> int:
+    from llm_tester.agent.eval import evaluate_traces, format_metrics
+    from llm_tester.agent.provider_adapter import build_llm_chat
+    from llm_tester.agent.traces import TraceSchemaError, resolve_traces
+    from llm_tester.baselines.registry import build_baseline
+
+    try:
+        traces = resolve_traces(
+            args.dataset,
+            path=args.dataset_path,
+            limit=args.limit,
+            download=args.download_injecagent,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except TraceSchemaError as exc:
+        print(f"Trace schema error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"Failed to load traces: {exc}", file=sys.stderr)
+        return 1
+
+    if not traces:
+        print("No traces loaded.", file=sys.stderr)
+        return 1
+
+    llm = None
+    if args.provider:
+        llm = build_llm_chat(
+            args.provider,
+            args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            max_retries=args.max_retries,
+        )
+    elif args.baseline == "task_shield":
+        print(
+            "Warning: task_shield without --provider will skip (ALLOW all). "
+            "Use --provider ollama --model qwen2.5:3b for real runs.",
+            file=sys.stderr,
+        )
+
+    sentinel_kwargs: Dict[str, Any] = {}
+    if args.baseline == "sentinel":
+        from llm_tester.sentinel.policy import load_policy
+
+        pol = load_policy(args.policy)
+        pol.enable_s4 = False  # offline default; enable via provider + future flag
+        sentinel_kwargs["policy"] = pol
+
+    guard = build_baseline(
+        args.baseline,
+        llm_provider=llm,
+        spotlight_mode=args.spotlight_mode,
+        prompt_guard_model=args.prompt_guard_model,
+        prompt_guard_threshold=args.prompt_guard_threshold,
+        sentinel_kwargs=sentinel_kwargs or None,
+    )
+    if getattr(guard, "skip_reason", None) and not getattr(guard, "available", True):
+        print(f"Note: {guard.skip_reason}", file=sys.stderr)
+
+    run_dir = prepare_run_dir(
+        args,
+        "baselines-eval",
+        name_parts=["baselines-eval", args.baseline, args.dataset],
+    )
+    metrics, records = evaluate_traces(traces, guard, collect_records=True)
+    with open_results_writer(run_dir, append=False) as writer:
+        for rec in records:
+            writer.write(rec)
+
+    metrics_dict = metrics.to_dict()
+    metrics_dict["dataset"] = args.dataset
+    metrics_dict["command"] = "baselines-eval"
+    metrics_dict["baseline"] = args.baseline
+    metrics_dict["baseline_available"] = bool(getattr(guard, "available", True))
+    config: Dict[str, Any] = {
+        "command": "baselines-eval",
+        "baseline": args.baseline,
+        "dataset": args.dataset,
+        "dataset_path": str(args.dataset_path) if args.dataset_path else None,
+        "limit": args.limit,
+        "spotlight_mode": args.spotlight_mode,
+        "prompt_guard_model": args.prompt_guard_model,
+        "prompt_guard_threshold": args.prompt_guard_threshold,
+        "provider": args.provider,
+        "model": args.model,
+        "baseline_available": bool(getattr(guard, "available", True)),
+        "skip_reason": getattr(guard, "skip_reason", None),
+    }
+    finalize_run_dir(
+        run_dir,
+        command="baselines-eval",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model,
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
+    if args.json:
+        print(json.dumps(metrics_dict, indent=2))
+    else:
+        print(
+            format_metrics(
+                metrics, title=f"baselines-eval baseline={args.baseline} dataset={args.dataset}"
+            )
         )
     return 0
 
@@ -1192,6 +1373,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_datasets(args)
     if args.command == "guard-eval":
         return cmd_guard_eval(args)
+    if args.command == "baselines-eval":
+        return cmd_baselines_eval(args)
     if args.command == "guard-calibrate":
         return cmd_guard_calibrate(args)
     if args.command == "agent-bench":
