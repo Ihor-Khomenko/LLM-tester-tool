@@ -43,3 +43,9 @@ jobs:
           llmtest datasets
           llmtest run --help
           llmtest report --help
+          llmtest guard-eval --help
+          llmtest agent-bench --help
+          llmtest sentinel-proxy --help
+          llmtest guard-eval --dataset synthetic --json
+          llmtest guard-eval --dataset jsonl \
+            --dataset-path llm_tester/data/agent/msr_examples.jsonl --json

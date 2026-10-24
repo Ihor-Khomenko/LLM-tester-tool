@@ -5,3 +5,4 @@ python-dotenv>=1.0.0
 datasets>=2.14.0
 llm-guard
 pytest>=7.0
+# MCP-Sentinel: pip install -e ".[sentinel]"  (+ sentinel-s3 / sentinel-mcp)

@@ -1,4 +1,4 @@
-"""Console entry point: ``llmtest run``, ``report``, and ``datasets``."""
+"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``agent-bench``."""
 
 from __future__ import annotations
 
@@ -174,7 +174,318 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("datasets", help="List available datasets and sources")
+
+    ge = sub.add_parser(
+        "guard-eval",
+        help="Evaluate MCP-Sentinel on traces (synthetic / InjecAgent / external JSONL)",
+    )
+    ge.add_argument(
+        "--dataset",
+        default="synthetic",
+        choices=["synthetic", "injecagent", "jsonl"],
+        help="synthetic (offline) | injecagent | jsonl (mcp-sentinel-trace/v1)",
+    )
+    ge.add_argument(
+        "--dataset-path",
+        type=Path,
+        default=None,
+        help="Path to mcp-sentinel-trace JSONL or InjecAgent JSON",
+    )
+    ge.add_argument(
+        "--download-injecagent",
+        action="store_true",
+        help="Download InjecAgent dh_base JSON from GitHub into .cache/ (needs network)",
+    )
+    ge.add_argument("--limit", type=int, default=None, help="Max cases (before twins)")
+    ge.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="Sentinel YAML policy path",
+    )
+    ge.add_argument(
+        "--no-s1",
+        action="store_true",
+        help="Ablation: disable S1 rules",
+    )
+    ge.add_argument("--no-s2", action="store_true", help="Ablation: disable S2 taint")
+    ge.add_argument("--no-s3", action="store_true", help="Ablation: disable S3 intent")
+    ge.add_argument("--no-s4", action="store_true", help="Ablation: disable S4 judge")
+    ge.add_argument(
+        "--only-s4",
+        action="store_true",
+        help="Ablation: only S4 (requires --provider)",
+    )
+    ge.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="Optional LLM for S3(llm)/S4 (ollama|openai|xai|openrouter|groq)",
+    )
+    ge.add_argument("--model", default=None, help="Model id (OpenRouter :free supported)")
+    ge.add_argument("--base-url", default=None, help="Override provider base URL")
+    ge.add_argument(
+        "--s3-backend",
+        default=None,
+        choices=["lite", "embeddings", "llm"],
+        help="Override policy s3_backend (llm needs --provider)",
+    )
+    ge.add_argument(
+        "--enable-s4",
+        action="store_true",
+        help="Enable S4 LLM judge (grey zone); needs --provider",
+    )
+    ge.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit metrics as JSON",
+    )
+    ge.add_argument(
+        "--log",
+        type=Path,
+        default=None,
+        help="Optional JSONL decision log path",
+    )
+    ge.add_argument("--max-retries", type=int, default=5)
+    ge.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ge.add_argument("--no-seed", action="store_true")
+
+    ab = sub.add_parser(
+        "agent-bench",
+        help="Scaffold: tool-using agent with/without MCP-Sentinel (any provider)",
+    )
+    ab.add_argument(
+        "--provider",
+        required=True,
+        choices=sorted(PROVIDERS.keys()),
+        help="LLM provider: ollama|openai|xai|openrouter|groq",
+    )
+    ab.add_argument(
+        "--model",
+        default=None,
+        help="Model id (OpenRouter free tier: suffix :free)",
+    )
+    ab.add_argument("--base-url", default=None, help="Override provider base URL")
+    ab.add_argument(
+        "--with-guard",
+        action="store_true",
+        default=True,
+        help="Enable MCP-Sentinel (default)",
+    )
+    ab.add_argument(
+        "--without-guard",
+        action="store_true",
+        help="Run agent without sentinel",
+    )
+    ab.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="Sentinel YAML policy",
+    )
+    ab.add_argument(
+        "--s3-backend",
+        default=None,
+        choices=["lite", "embeddings", "llm"],
+        help="S3 backend when guard is enabled",
+    )
+    ab.add_argument(
+        "--enable-s4",
+        action="store_true",
+        help="Enable S4 judge using the same --provider",
+    )
+    ab.add_argument(
+        "--out",
+        type=Path,
+        default=Path("agent_bench.jsonl"),
+        help="JSONL output path",
+    )
+    ab.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip scenario ids already present in --out",
+    )
+    ab.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Cap new provider calls this run",
+    )
+    ab.add_argument(
+        "--max-retries",
+        type=int,
+        default=5,
+        help="Retries on HTTP 429 (default 5)",
+    )
+    ab.add_argument(
+        "--temperature",
+        type=float,
+        default=DEFAULT_TEMPERATURE,
+    )
+    ab.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    ab.add_argument("--no-seed", action="store_true")
+
+    sp = sub.add_parser(
+        "sentinel-proxy",
+        help="Run MCP stdio JSON-RPC proxy wrapping a backend MCP server",
+    )
+    sp.add_argument("--policy", type=Path, default=None)
+    sp.add_argument("--log", type=Path, default=None)
+    sp.add_argument("--user-task", default="")
+    sp.add_argument(
+        "command",
+        nargs=argparse.REMAINDER,
+        help="Backend command after --",
+    )
     return parser
+
+
+def cmd_guard_eval(args: argparse.Namespace) -> int:
+    from llm_tester.agent.eval import evaluate_traces, format_metrics
+    from llm_tester.agent.provider_adapter import build_llm_chat
+    from llm_tester.agent.traces import resolve_traces
+    from llm_tester.sentinel.guard import build_sentinel
+    from llm_tester.sentinel.policy import load_policy
+
+    try:
+        traces = resolve_traces(
+            args.dataset,
+            path=args.dataset_path,
+            limit=args.limit,
+            download=args.download_injecagent,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Failed to load traces: {exc}", file=sys.stderr)
+        return 1
+
+    if not traces:
+        print("No traces loaded.", file=sys.stderr)
+        return 1
+
+    policy = load_policy(args.policy)
+    policy = policy.with_ablation(
+        no_s1=args.no_s1,
+        no_s2=args.no_s2,
+        no_s3=args.no_s3,
+        no_s4=args.no_s4,
+        only_s4=args.only_s4,
+    )
+    if args.s3_backend:
+        policy.s3_backend = args.s3_backend
+
+    llm = None
+    want_llm = (
+        args.only_s4
+        or args.enable_s4
+        or (args.s3_backend == "llm")
+        or (policy.s3_backend == "llm")
+    )
+    if args.only_s4 or args.enable_s4:
+        policy.enable_s4 = True
+    elif not args.only_s4:
+        # Default offline path: no S4 unless explicitly enabled.
+        if not args.enable_s4:
+            policy.enable_s4 = False
+
+    if want_llm and args.provider:
+        llm = build_llm_chat(
+            args.provider,
+            args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            max_retries=args.max_retries,
+        )
+    elif want_llm and not args.provider:
+        print(
+            "Warning: S3/S4 LLM backend requested but --provider not set; "
+            "falling back to lite S3 / no S4.",
+            file=sys.stderr,
+        )
+        if policy.s3_backend == "llm":
+            policy.s3_backend = "lite"
+        policy.enable_s4 = False
+
+    guard = build_sentinel(policy=policy, llm_provider=llm, log_path=args.log)
+    metrics = evaluate_traces(traces, guard)
+    if args.json:
+        print(json.dumps(metrics.to_dict(), indent=2))
+    else:
+        abl = []
+        if args.no_s1:
+            abl.append("-S1")
+        if args.no_s2:
+            abl.append("-S2")
+        if args.no_s3:
+            abl.append("-S3")
+        if args.only_s4:
+            abl.append("only-S4")
+        title = f"guard-eval dataset={args.dataset}" + (
+            f" ablation={','.join(abl)}" if abl else ""
+        )
+        print(format_metrics(metrics, title=title))
+        print(
+            "\nNote: numbers are measured on this run's traces (preliminary). "
+            "Not claimed as published results."
+        )
+    return 0
+
+
+def cmd_agent_bench(args: argparse.Namespace) -> int:
+    from llm_tester.agent.agent_bench import DEFAULT_SCENARIOS, run_agent_bench
+    from llm_tester.agent.provider_adapter import build_llm_chat
+    from llm_tester.sentinel.guard import build_sentinel
+    from llm_tester.sentinel.policy import load_policy
+
+    provider = build_llm_chat(
+        args.provider,
+        args.model,
+        base_url=args.base_url,
+        temperature=args.temperature,
+        seed=None if args.no_seed else args.seed,
+        max_retries=args.max_retries,
+    )
+    with_guard = not args.without_guard
+    guard = None
+    if with_guard and (args.enable_s4 or args.s3_backend):
+        policy = load_policy(args.policy)
+        if args.s3_backend:
+            policy.s3_backend = args.s3_backend
+        if args.enable_s4:
+            policy.enable_s4 = True
+        guard = build_sentinel(policy=policy, llm_provider=provider)
+
+    summary = run_agent_bench(
+        DEFAULT_SCENARIOS,
+        provider,
+        out_path=args.out,
+        with_guard=with_guard,
+        resume=args.resume,
+        max_requests=args.max_requests,
+        policy_path=args.policy,
+        guard=guard,
+        llm_provider=provider if with_guard else None,
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_sentinel_proxy(args: argparse.Namespace) -> int:
+    from llm_tester.sentinel.proxy import main as proxy_main
+
+    argv: List[str] = []
+    if args.policy:
+        argv.extend(["--policy", str(args.policy)])
+    if args.log:
+        argv.extend(["--log", str(args.log)])
+    if args.user_task:
+        argv.extend(["--user-task", args.user_task])
+    argv.extend(args.command)
+    return proxy_main(argv)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -273,6 +584,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_report(args)
     if args.command == "datasets":
         return cmd_datasets(args)
+    if args.command == "guard-eval":
+        return cmd_guard_eval(args)
+    if args.command == "agent-bench":
+        return cmd_agent_bench(args)
+    if args.command == "sentinel-proxy":
+        return cmd_sentinel_proxy(args)
     parser.error(f"Unknown command: {args.command}")
     return 2
 
