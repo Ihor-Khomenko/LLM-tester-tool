@@ -58,6 +58,10 @@ s3_block_threshold: 0.65
 s3_min_similarity: 0.25
 s3_backend: lite
 
+# S4 judge: auto-detect llama-guard* models; ambiguous → defer to prior cascade.
+s4_judge_family: auto
+s4_ambiguous_policy: defer
+
 ask_user_on_block: false
 high_risk_action: block
 

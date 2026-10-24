@@ -190,6 +190,7 @@ class RulesStage:
                 details["sensitive_paths"] = findings
                 score = max(score, float(self.policy.sensitive_path_score))
 
+            # Single-stage ownership (not also S2) to avoid double-counting FPR.
             unreq = unrequested_resource_access(
                 call.arguments or {},
                 user_request or "",
@@ -198,9 +199,14 @@ class RulesStage:
             if unreq:
                 reasons.append("s1:unrequested_resource")
                 details["unrequested_resources"] = unreq
-                # Slightly below hard sensitive-path so provenance can still dominate,
-                # but clears default tau_high (0.70) via noisy-OR / alone.
-                score = max(score, min(0.85, float(self.policy.sensitive_path_score) - 0.05))
+                hard = any(f.get("severity") == "hard" for f in unreq)
+                if hard:
+                    score = max(
+                        score, min(0.85, float(self.policy.sensitive_path_score) - 0.05)
+                    )
+                else:
+                    # Soft: relative ordinary file — alone stays under τ_high.
+                    score = max(score, 0.35)
 
         elapsed = (time.perf_counter() - start) * 1000
         return StageScore(

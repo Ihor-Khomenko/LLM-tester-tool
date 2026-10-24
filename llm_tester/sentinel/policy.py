@@ -114,6 +114,10 @@ class SentinelPolicy:
     # S4 — concrete client is injected via LLMChat; these are host hints only
     s4_provider: str = "ollama"
     s4_model: Optional[str] = None
+    # Judge prompt/parser family: auto | allow_block | llama_guard
+    s4_judge_family: str = "auto"
+    # Ambiguous judge output: defer (keep prior risk) | allow | block
+    s4_ambiguous_policy: str = "defer"
     ask_user_on_block: bool = False
 
     # T0
