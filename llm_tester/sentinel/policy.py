@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from llm_tester.sentinel.side_effects import DEFAULT_SIDE_EFFECT_VERBS
+
 DEFAULT_POLICY_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "sentinel" / "policy.default.yaml"
 )
@@ -63,13 +65,17 @@ class SentinelPolicy:
     tau_low: float = 0.25
     tau_high: float = 0.70
 
+    # How enabled stage scores combine: noisy_or (monotone) | max.
+    risk_aggregation: str = "noisy_or"
+
     # Stage enable flags (ablation).
     enable_s1: bool = True
     enable_s2: bool = True
     enable_s3: bool = True
     enable_s4: bool = False  # optional / expensive; off by default
 
-    # Stage weights for risk aggregation.
+    # Stage weights kept for backwards-compat / reporting; aggregation no longer
+    # dilutes via weighted averages of disabled stages.
     weight_s1: float = 0.35
     weight_s2: float = 0.45
     weight_s3: float = 0.20
@@ -80,6 +86,9 @@ class SentinelPolicy:
     destructive_tool_substrings: List[str] = field(
         default_factory=lambda: list(DEFAULT_DESTRUCTIVE_TOOLS)
     )
+    # Unauthorized sensitive-path / credential reads (generic patterns).
+    block_sensitive_paths: bool = True
+    sensitive_path_score: float = 0.9
 
     # S2
     s2_block_threshold: float = 0.55
@@ -89,24 +98,13 @@ class SentinelPolicy:
     sensitive_arg_weight: float = 1.5
     default_arg_weight: float = 0.35  # non-sink args: informational, rarely decisive
     taint_ngram_n: int = 3
-    # Side-effect tool name substrings: elevate non-sink taint when present.
-    side_effect_tools: List[str] = field(
-        default_factory=lambda: list(DEFAULT_DESTRUCTIVE_TOOLS)
-        + [
-            "transfer",
-            "send",
-            "email",
-            "http",
-            "post",
-            "wire",
-            "grant",
-            "exec",
-            "write_file",
-            "writefile",
-            "upload",
-            "download",
-        ]
+    # Generic side-effect *verbs* (name segments / description cues) — not
+    # fixture-specific tool ids. Classification also uses tool schema sinks.
+    side_effect_verbs: List[str] = field(
+        default_factory=lambda: list(DEFAULT_SIDE_EFFECT_VERBS)
     )
+    # Deprecated alias kept so older YAML still loads; merged into verbs.
+    side_effect_tools: List[str] = field(default_factory=list)
 
     # S3 — backend: lite | embeddings | llm (llm needs injected LLMChat)
     s3_block_threshold: float = 0.65
@@ -127,6 +125,14 @@ class SentinelPolicy:
 
     # Action when risk >= tau_high
     high_risk_action: str = "block"  # block | ask_user
+
+    def effective_side_effect_verbs(self) -> List[str]:
+        verbs = list(self.side_effect_verbs or [])
+        # Legacy YAML key: treat entries as additional verbs/aliases.
+        for extra in self.side_effect_tools or []:
+            if extra and extra not in verbs:
+                verbs.append(extra)
+        return verbs
 
     def stage_enabled(self, stage: str) -> bool:
         key = stage.upper()

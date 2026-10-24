@@ -116,6 +116,7 @@ def test_eval_counts_t0_block_as_tp():
 
 def test_s3_critical_mismatch_blocks_write_file():
     # Disable S2 so the pilot failure mode (S3 sees sim~0.02 but allow) is isolated.
+    # Side-effect comes from generic verb segment "write", not a fixture allow-list.
     g = SentinelGuard(SentinelPolicy(enable_s4=False, enable_s2=False, enable_s1=False))
     g.set_user_task("Organise my meeting notes into a short summary file")
     g.on_tool_output(
@@ -134,6 +135,7 @@ def test_s3_critical_mismatch_blocks_write_file():
     assert s3 is not None
     assert s3.details.get("similarity", 1) <= 0.25
     assert s3.details.get("critical_mismatch") is True
+    assert s3.details.get("side_effect_tool") is True
 
 
 def test_parse_action_input_without_colon():

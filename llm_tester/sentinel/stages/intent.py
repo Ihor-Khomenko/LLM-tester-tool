@@ -140,7 +140,14 @@ class IntentStage:
             return sim01, {"backend": "embeddings", "raw_cosine": sim}
         return lite_similarity(user, verbalized)
 
-    def score_call(self, user_request: str, call: ToolCall) -> StageScore:
+    def score_call(
+        self,
+        user_request: str,
+        call: ToolCall,
+        *,
+        description: str = "",
+        input_schema: Optional[Dict] = None,
+    ) -> StageScore:
         start = time.perf_counter()
         reasons = []
         sim, details = self.similarity(user_request or "", call)
@@ -154,21 +161,31 @@ class IntentStage:
 
         details["similarity"] = sim
         details["mismatch"] = mismatch
+        details["tool_description"] = description
+        if input_schema is not None:
+            details["input_schema"] = input_schema
         if self._init_error:
             details["init_error"] = self._init_error
 
         backend = details.get("backend", "lite")
-        from llm_tester.sentinel.stages.taint import _name_matches_any
+        from llm_tester.sentinel.side_effects import is_side_effect_tool
 
-        tool_l = call.name.lower()
-        side_effect = _name_matches_any(tool_l, self.policy.side_effect_tools)
+        side_effect = is_side_effect_tool(
+            call.name,
+            description=description or "",
+            input_schema=input_schema,
+            verbs=self.policy.effective_side_effect_verbs(),
+            arguments=call.arguments,
+        )
         details["side_effect_tool"] = side_effect
-        # Critical low similarity: full weight for embeddings/llm, or for lite
-        # when the planned tool is a side-effect sink (write/send/transfer/…).
-        # Pure lite mismatch on benign tools (notes.write, weather) stays soft
-        # so utility FPs stay rare — S2 provenance remains the primary signal.
-        if sim <= min_sim and (backend != "lite" or side_effect):
+        # Soft scoring so S3 alone often lands in the grey zone (S4 path) rather
+        # than always hard-blocking. Side-effect tools get a higher but not
+        # saturating scale; embeddings/llm keep full weight.
+        if sim <= min_sim and backend != "lite":
             scale = 1.0
+            details["critical_mismatch"] = True
+        elif sim <= min_sim and side_effect:
+            scale = 0.85
             details["critical_mismatch"] = True
         elif backend == "lite":
             scale = 0.55

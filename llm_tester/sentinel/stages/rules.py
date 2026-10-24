@@ -150,8 +150,13 @@ class RulesStage:
             latency_ms=elapsed,
         )
 
-    def scan_call(self, call: ToolCall) -> StageScore:
-        """Scan tool name + serialized arguments; apply destructive-tool policy."""
+    def scan_call(
+        self,
+        call: ToolCall,
+        *,
+        user_request: str = "",
+    ) -> StageScore:
+        """Scan tool name + args; destructive tools + unauthorized sensitive paths."""
         start = time.perf_counter()
         parts = [call.name] + [f"{k}={v}" for k, v in call.arguments.items()]
         base = self.scan_text("\n".join(parts))
@@ -160,15 +165,27 @@ class RulesStage:
         score = base.score
 
         if self.policy.block_destructive_tools:
-            name_l = call.name.lower()
-            for sub in self.policy.destructive_tool_substrings:
-                if sub.lower() in name_l:
-                    # Soft signal — destructive alone is not an attack, but
-                    # elevates risk when combined with taint (handled in cascade).
-                    reasons.append(f"s1:destructive_tool:{sub}")
-                    details["destructive"] = True
-                    score = max(score, 0.35)
-                    break
+            from llm_tester.sentinel.side_effects import name_matches_verbs
+
+            if name_matches_verbs(
+                call.name, self.policy.destructive_tool_substrings
+            ):
+                # Soft signal — destructive alone is not an attack, but
+                # elevates risk when combined with taint (handled in cascade).
+                reasons.append("s1:destructive_tool")
+                details["destructive"] = True
+                score = max(score, 0.35)
+
+        if self.policy.block_sensitive_paths:
+            from llm_tester.sentinel.side_effects import unauthorized_sensitive_paths
+
+            findings = unauthorized_sensitive_paths(
+                call.arguments or {}, user_request or ""
+            )
+            if findings:
+                reasons.append("s1:sensitive_path")
+                details["sensitive_paths"] = findings
+                score = max(score, float(self.policy.sensitive_path_score))
 
         elapsed = (time.perf_counter() - start) * 1000
         return StageScore(

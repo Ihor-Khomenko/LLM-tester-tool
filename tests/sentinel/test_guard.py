@@ -39,7 +39,8 @@ def test_check_tool_call_allows_benign():
         )
     )
     assert d.decision == Decision.ALLOW
-    assert d.risk_score < 0.5
+    # Lite S3 may score soft mismatch in the grey band; without S4 that allows.
+    assert d.risk_score < g.policy.tau_high
 
 
 def test_summarisation_copy_not_blocked():

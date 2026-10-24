@@ -210,6 +210,12 @@ _JSON_BLOB_RE = re.compile(
     r"\"(?:arguments|parameters|args|input)\"\s*:\s*(\{.*?\})[^{}]*\}",
     re.DOTALL,
 )
+# Require an Action / Tool keyword *and* a JSON object that looks like args.
+_LOOSE_ACTION_RE = re.compile(
+    r"(?:^|\n)\s*Action\s*:\s*([A-Za-z0-9_.-]+)\s*"
+    r"(?:\n\s*)?(?:Action\s*Input|Input|Args|Arguments)\s*:?\s*(\{[^{}]*\})",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _parse_args_blob(raw: str) -> Dict[str, Any]:
@@ -226,12 +232,46 @@ def _parse_args_blob(raw: str) -> Dict[str, Any]:
             return {"raw": text}
 
 
+def _looks_like_tool_name(name: str) -> bool:
+    """Reject prose words accidentally captured as tool names."""
+    n = (name or "").strip()
+    if not n or " " in n:
+        return False
+    if len(n) < 2 or len(n) > 64:
+        return False
+    # Plain English stop-words that appeared in pilot false parses.
+    blocked = {
+        "the",
+        "a",
+        "an",
+        "to",
+        "for",
+        "and",
+        "or",
+        "wait",
+        "please",
+        "final",
+        "answer",
+        "user",
+        "assistant",
+        "thought",
+        "observation",
+    }
+    if n.lower() in blocked:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]*", n))
+
+
 def parse_agent_output(text: str) -> Dict[str, Any]:
-    """Parse ReAct-style or JSON tool-call text into action/final."""
+    """Parse ReAct-style or JSON tool-call text into action/final.
+
+    Plain prose without an Action/tool schema must remain ``final`` — never
+    invent a tool call from incidental braces or the word \"action\".
+    """
     body = text or ""
     for pat in _ACTION_PATTERNS:
         m = pat.search(body)
-        if m:
+        if m and _looks_like_tool_name(m.group(1)):
             return {
                 "type": "action",
                 "name": m.group(1),
@@ -239,7 +279,7 @@ def parse_agent_output(text: str) -> Dict[str, Any]:
                 "parse_mode": "react",
             }
     m = _JSON_BLOB_RE.search(body)
-    if m:
+    if m and _looks_like_tool_name(m.group(1)):
         return {
             "type": "action",
             "name": m.group(1),
@@ -249,13 +289,9 @@ def parse_agent_output(text: str) -> Dict[str, Any]:
     f = _FINAL_RE.search(body)
     if f:
         return {"type": "final", "text": f.group(1).strip(), "parse_mode": "final"}
-    # Last resort: line starting with Action
-    loose = re.search(
-        r"Action\s*:?\s*([A-Za-z0-9_.-]+).*?(\{[^{}]*\})",
-        body,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if loose:
+    # Conservative loose fallback: still requires Action + Input/Args + JSON.
+    loose = _LOOSE_ACTION_RE.search(body)
+    if loose and _looks_like_tool_name(loose.group(1)):
         return {
             "type": "action",
             "name": loose.group(1),
@@ -381,6 +417,15 @@ def run_scenario(
     requests_used = 0
     openai_tools = openai_tools_from_spec() if use_native_tools else None
 
+    def _consume_attempts(result: Any = None, *, failed: bool = False) -> int:
+        """Count every HTTP attempt, including 429 retries (and the final fail)."""
+        attempts = 1
+        if result is not None:
+            attempts = int(getattr(result, "attempts", None) or 1)
+        else:
+            attempts = int(getattr(provider, "last_attempts", None) or 1)
+        return max(1, attempts)
+
     for _turn in range(max_turns):
         if max_requests_remaining is not None and requests_used >= max_requests_remaining:
             record.error = "max_requests"
@@ -390,7 +435,6 @@ def run_scenario(
         try:
             # Prefer native tool-calling when the provider client supports a
             # tools= kwarg; fall back to text ReAct.
-            chat_kwargs: Dict[str, Any] = {"system": system}
             content = ""
             native_actions: List[Dict[str, Any]] = []
             if openai_tools is not None and hasattr(provider, "chat"):
@@ -408,9 +452,10 @@ def run_scenario(
                 content = getattr(result, "content", None) or str(result)
                 native_actions = extract_native_tool_calls(result)
         except Exception as exc:
+            requests_used += _consume_attempts(failed=True)
             record.error = str(exc)
             break
-        requests_used += 1
+        requests_used += _consume_attempts(result)
 
         actions = native_actions or [parse_agent_output(content)]
         record.steps.append(

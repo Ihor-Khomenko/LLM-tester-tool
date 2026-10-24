@@ -35,11 +35,13 @@ def test_evaluate_synthetic_reasonable_metrics():
     assert metrics.latency_p95_ms < 100.0
     assert metrics.by_checkpoint
     assert "detection_rule" in metrics.to_dict()
+    assert "block_only" in metrics.to_dict()
+    assert "any_intervention" in metrics.to_dict()
 
     text = format_metrics(metrics)
     assert "TPR=" in text
     assert "ASR" in text
-    assert "checkpoint" in text.lower() or "First detection" in text
+    assert "any-intervention" in text.lower() or "block-only" in text.lower()
 
 
 def test_ablation_no_s2_hurts_tpr_on_taint_heavy_set():
@@ -51,9 +53,10 @@ def test_ablation_no_s2_hurts_tpr_on_taint_heavy_set():
             policy=SentinelPolicy(enable_s2=False, enable_s4=False, enable_s3=True)
         ),
     )
-    # Full cascade should catch at least as many attacks as -S2 on this set,
-    # or be within a small margin if S1 alone already fires.
-    assert full.tp >= no_s2.tp or full.tpr >= (no_s2.tpr or 0) - 0.05
+    # Full cascade should catch at least as many attacks as -S2 on this set
+    # (noisy-OR ablation is monotone).
+    assert full.any_intervention.tp >= no_s2.any_intervention.tp
+    assert (full.any_intervention.tpr or 0) >= (no_s2.any_intervention.tpr or 0) - 1e-9
 
 
 def test_resolve_jsonl_path(tmp_path: Path):

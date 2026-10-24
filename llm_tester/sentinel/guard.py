@@ -200,14 +200,30 @@ class SentinelGuard:
             self.set_user_task(user_request)
 
         stage_scores: List[StageScore] = []
+        spec = self.registry.lookup_spec(call.name)
+        description = spec.description if spec else ""
+        input_schema = spec.input_schema if spec else None
 
         if self.policy.enable_s1:
-            stage_scores.append(self.rules.scan_call(call))
+            stage_scores.append(
+                self.rules.scan_call(
+                    call, user_request=self.store.user_request
+                )
+            )
         if self.policy.enable_s2:
-            stage_scores.append(self.taint.score_call(call))
+            stage_scores.append(
+                self.taint.score_call(
+                    call, description=description, input_schema=input_schema
+                )
+            )
         if self.policy.enable_s3 and self.intent is not None:
             stage_scores.append(
-                self.intent.score_call(self.store.user_request, call)
+                self.intent.score_call(
+                    self.store.user_request,
+                    call,
+                    description=description,
+                    input_schema=input_schema,
+                )
             )
 
         risk, reasons = aggregate_risk(stage_scores, self.policy)

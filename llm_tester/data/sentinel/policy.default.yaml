@@ -3,6 +3,7 @@
 
 tau_low: 0.25
 tau_high: 0.70
+risk_aggregation: noisy_or
 
 enable_s1: true
 enable_s2: true
@@ -15,31 +16,43 @@ weight_s3: 0.20
 
 s1_block_threshold: 0.85
 block_destructive_tools: true
+block_sensitive_paths: true
+sensitive_path_score: 0.9
 
 s2_block_threshold: 0.55
 sensitive_arg_weight: 1.5
 default_arg_weight: 0.35
 taint_ngram_n: 3
-side_effect_tools:
+# Generic verbs / name segments — not fixture-specific tool ids.
+side_effect_verbs:
+  - write
+  - create
+  - update
   - delete
   - remove
   - rm
-  - transfer
-  - send_money
   - send
-  - wire
-  - grant
-  - revoke
-  - exec
-  - shell
-  - run_command
   - email
-  - http
+  - transfer
+  - wire
+  - pay
   - post
-  - write_file
-  - writefile
+  - put
   - upload
   - download
+  - fetch
+  - http
+  - exec
+  - execute
+  - shell
+  - run
+  - command
+  - grant
+  - revoke
+  - chmod
+  - move
+  - rename
+  - copy
 
 s3_block_threshold: 0.65
 s3_min_similarity: 0.25

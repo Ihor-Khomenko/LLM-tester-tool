@@ -6,7 +6,7 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
 - **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
 - **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
@@ -230,7 +230,11 @@ llmtest guard-eval --dataset synthetic --enable-s4 \
   --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free
 ```
 
-Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`, plus auto-adapter for research export `1.0`). Unknown schemas fail loudly. Detection counts **any** of T0 block / T1 sanitize / T2 block.
+# Calibrate tau_low/tau_high on a train split; evaluate held-out (split recorded in --out)
+llmtest guard-calibrate --dataset synthetic --split-by attack_type \
+  --train-frac 0.5 --seed 0 --out guard_calibrate.json
+
+Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`, plus auto-adapter for research export `1.0`). Unknown schemas fail loudly. Metrics report **symmetric** any-intervention (block|ask_user|sanitize) and block-only TPR/FPR. Risk uses noisy-OR over enabled stages (ablations are monotone).
 
 Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95 into `metrics.json` + `results.jsonl.gz`. Numbers from a run are **measured preliminary results**, not published claims.
 

@@ -11,9 +11,13 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple  # Iterable used below
 
 from llm_tester.sentinel.policy import SentinelPolicy, is_sensitive_arg
+from llm_tester.sentinel.side_effects import (
+    is_side_effect_tool,
+    unauthorized_sensitive_paths,
+)
 from llm_tester.sentinel.types import StageScore, ToolCall
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_@./:+-]{2,}")
@@ -144,14 +148,25 @@ class TaintStage:
     def bind_store(self, store: TaintStore) -> None:
         self.store = store
 
-    def score_call(self, call: ToolCall) -> StageScore:
+    def score_call(
+        self,
+        call: ToolCall,
+        *,
+        description: str = "",
+        input_schema: Optional[Dict] = None,
+    ) -> StageScore:
         start = time.perf_counter()
         reasons: List[str] = []
         per_arg: Dict[str, Dict] = {}
         weighted_scores: List[float] = []
 
-        tool_l = call.name.lower()
-        side_effect = _name_matches_any(tool_l, self.policy.side_effect_tools)
+        side_effect = is_side_effect_tool(
+            call.name,
+            description=description,
+            input_schema=input_schema,
+            verbs=self.policy.effective_side_effect_verbs(),
+            arguments=call.arguments,
+        )
 
         for key, raw in (call.arguments or {}).items():
             value = raw if isinstance(raw, str) else str(raw)
@@ -193,33 +208,36 @@ class TaintStage:
             score = min(1.0, score + 0.1)
             reasons.append("s2:side_effect_tool")
 
+        # Tainted sensitive-path / credential resource access (exfiltration).
+        sens = unauthorized_sensitive_paths(
+            call.arguments or {}, self.store.user_request
+        )
+        if sens:
+            for finding in sens:
+                key = finding["arg"]
+                pi, _ = argument_attribution(str(finding["value"]), self.store)
+                # Even without strong token taint, unauthorized sensitive paths
+                # are high risk (path may be short / absolute).
+                bump = 0.85 if pi >= 0.2 else 0.75
+                score = max(score, bump)
+                reasons.append(f"s2:sensitive_path:{key}")
+            per_arg["__sensitive_paths__"] = sens
+
         elapsed = (time.perf_counter() - start) * 1000
         return StageScore(
             stage=self.name,
             score=float(min(1.0, score)),
             reasons=reasons,
-            details={"args": per_arg, "n_sources": len(self.store.sources)},
+            details={
+                "args": per_arg,
+                "n_sources": len(self.store.sources),
+                "side_effect_tool": side_effect,
+            },
             latency_ms=elapsed,
         )
 
     def mark_output(self, source: str, content: str) -> None:
         self.store.add_tool_output(source, content)
-
-
-def _name_matches_any(tool_l: str, needles: Iterable[str]) -> bool:
-    """Match whole segments / full aliases, not bare substrings (notes.write ≠ write)."""
-    import re
-
-    parts = set(re.split(r"[._\-\s]+", tool_l))
-    for raw in needles:
-        n = raw.lower().strip()
-        if not n:
-            continue
-        if tool_l == n or n in parts:
-            return True
-        if ("_" in n or "." in n or len(n) >= 6) and n in tool_l:
-            return True
-    return False
 
 
 def build_store_from_outputs(

@@ -12,43 +12,60 @@ def aggregate_risk(
     scores: Sequence[StageScore],
     policy: SentinelPolicy,
 ) -> Tuple[float, List[str]]:
-    """Weighted max/mean hybrid of enabled stage scores → r in [0, 1]."""
+    """
+    Combine **enabled** stage scores into risk r ∈ [0, 1].
+
+    Disabled stages must not appear in ``scores`` (caller skips them). Aggregation
+    is monotone in the set of stages: removing a stage cannot raise risk.
+
+    Modes (``policy.risk_aggregation``):
+    - ``noisy_or`` (default): ``1 - ∏(1 - s_i)`` — ablating a stage cleanly
+      removes its factor; no dilution by zero-weight averages.
+    - ``max``: peak of enabled scores.
+    """
     if not scores:
         return 0.0, []
 
-    weights = {
-        "S1": policy.weight_s1 if policy.enable_s1 else 0.0,
-        "S2": policy.weight_s2 if policy.enable_s2 else 0.0,
-        "S3": policy.weight_s3 if policy.enable_s3 else 0.0,
-    }
-    weighted_sum = 0.0
-    weight_total = 0.0
-    peak = 0.0
     reasons: List[str] = []
+    active: List[float] = []
 
     for s in scores:
-        w = weights.get(s.stage, 0.0)
-        if w <= 0 and s.stage in weights:
-            continue
         if s.stage == "S4":
-            # S4 overrides when present.
-            return float(min(1.0, s.score)), list(s.reasons)
-        peak = max(peak, s.score)
-        if w > 0:
-            weighted_sum += w * s.score
-            weight_total += w
+            # S4 verdict replaces the cascade score when present.
+            return float(min(1.0, max(0.0, s.score))), list(s.reasons)
         reasons.extend(s.reasons)
+        active.append(float(min(1.0, max(0.0, s.score))))
 
-    if weight_total <= 0:
-        return float(min(1.0, peak)), reasons
+    if not active:
+        return 0.0, reasons
 
-    mean = weighted_sum / weight_total
-    # Emphasize peaks so a single strong S2/S3 hit is not diluted by zeros.
-    risk = 0.45 * mean + 0.55 * peak
-    # Hard floor: a near-certain stage score must dominate the cascade.
-    if peak >= 0.85:
-        risk = max(risk, peak)
+    mode = (policy.risk_aggregation or "noisy_or").lower().strip()
+    if mode == "max":
+        risk = max(active)
+    else:
+        # noisy-OR (default)
+        surv = 1.0
+        for s in active:
+            surv *= 1.0 - s
+        risk = 1.0 - surv
+
     return float(min(1.0, max(0.0, risk))), reasons
+
+
+def _s3_dominant_uncertain(stage_scores: Sequence[StageScore], policy: SentinelPolicy) -> bool:
+    """True when risk is driven mainly by soft S3 intent (prefer S4 over hard block)."""
+    by = {s.stage: s for s in stage_scores}
+    s3 = by.get("S3")
+    if s3 is None or s3.score < policy.tau_low:
+        return False
+    s2 = by.get("S2")
+    s1 = by.get("S1")
+    s2_score = s2.score if s2 else 0.0
+    s1_score = s1.score if s1 else 0.0
+    # Strong provenance / signatures already justify a hard decision.
+    if s2_score >= policy.s2_block_threshold or s1_score >= policy.s1_block_threshold:
+        return False
+    return s3.score >= max(s2_score, s1_score)
 
 
 def decide_from_risk(
@@ -68,41 +85,22 @@ def decide_from_risk(
             )
         return Decision.ALLOW
 
-    # Per-stage hard thresholds (S3 critical mismatch → block/escalate).
-    if stage_scores:
-        for s in stage_scores:
-            if s.stage == "S3" and s.score >= policy.s3_block_threshold:
-                if policy.enable_s4:
-                    return Decision.ESCALATE
-                return (
-                    Decision.ASK_USER
-                    if policy.ask_user_on_block or policy.high_risk_action == "ask_user"
-                    else Decision.BLOCK
-                )
-            if s.stage == "S2" and s.score >= policy.s2_block_threshold:
-                if risk < policy.tau_high:
-                    risk = max(risk, s.score)
-            if s.stage == "S1" and s.score >= policy.s1_block_threshold:
-                risk = max(risk, s.score)
+    stages = stage_scores or ()
 
     if risk >= policy.tau_high:
+        # Restore grey-zone path: uncertain S3-lite intent escalates to S4
+        # instead of hard-blocking without a judge.
+        if policy.enable_s4 and _s3_dominant_uncertain(stages, policy):
+            return Decision.ESCALATE
         if policy.high_risk_action == "ask_user" or policy.ask_user_on_block:
             return Decision.ASK_USER
         return Decision.BLOCK
+
     if risk <= policy.tau_low:
         return Decision.ALLOW
-    # Grey zone: escalate to S4 when enabled.
+
+    # Grey zone: the intended S4 path. Without S4, allow (utility / FPR) —
+    # calibrate ``tau_high`` rather than mid-splitting the band.
     if policy.enable_s4:
         return Decision.ESCALATE
-    # Without S4: block when a stage already hit a hard threshold (handled
-    # above) or risk is in the upper half of the grey band; otherwise allow
-    # (preserves utility). Critical S3 on side-effect tools scores ≥0.85 and
-    # clears tau_high via the peak floor.
-    mid = (policy.tau_low + policy.tau_high) / 2.0
-    if risk >= mid:
-        return (
-            Decision.ASK_USER
-            if policy.ask_user_on_block or policy.high_risk_action == "ask_user"
-            else Decision.BLOCK
-        )
     return Decision.ALLOW

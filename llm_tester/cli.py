@@ -1,4 +1,4 @@
-"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``agent-bench``, ``index``, ``compare``, ``figures``."""
+"""Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``, ``guard-calibrate``, ``agent-bench``, ``index``, ``compare``, ``figures``."""
 
 from __future__ import annotations
 
@@ -366,6 +366,58 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ab.add_argument("--no-seed", action="store_true")
 
+    gc = sub.add_parser(
+        "guard-calibrate",
+        help="Tune tau_low/tau_high on a train split; evaluate on held-out",
+    )
+    gc.add_argument(
+        "--dataset",
+        default="synthetic",
+        choices=["synthetic", "injecagent", "jsonl"],
+        help="Dataset to split (injecagent recommended for calibration)",
+    )
+    gc.add_argument("--dataset-path", type=Path, default=None)
+    gc.add_argument(
+        "--download-injecagent",
+        action="store_true",
+        help="Download InjecAgent JSON into .cache/ (needs network)",
+    )
+    gc.add_argument("--limit", type=int, default=None)
+    gc.add_argument("--policy", type=Path, default=None)
+    gc.add_argument(
+        "--split-by",
+        default="tool",
+        choices=["tool", "attack_type", "id_hash"],
+        help="Hold out whole groups (attacker tool / attack type / id hash)",
+    )
+    gc.add_argument(
+        "--train-frac",
+        type=float,
+        default=0.5,
+        help="Fraction of groups used for threshold search",
+    )
+    gc.add_argument("--seed", type=int, default=0)
+    gc.add_argument(
+        "--objective",
+        default="youden",
+        choices=["youden", "f1", "block_f1", "tpr", "f1_fpr"],
+        help="Train objective for grid search",
+    )
+    gc.add_argument(
+        "--max-fpr",
+        type=float,
+        default=0.15,
+        help="Discard train candidates with any-intervention FPR above this",
+    )
+    gc.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Optional JSON mirror of calibration result (also written under --run-dir)",
+    )
+    gc.add_argument("--json", action="store_true", help="Print full result JSON")
+    add_run_dir_args(gc, default_name_help="guard-calibrate_<dataset>")
+
     sp = sub.add_parser(
         "sentinel-proxy",
         help="Run MCP stdio JSON-RPC proxy wrapping a backend MCP server",
@@ -618,6 +670,114 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         print(
             "\nNote: numbers are measured on this run's traces (preliminary). "
             "Not claimed as published results."
+        )
+    return 0
+
+
+def cmd_guard_calibrate(args: argparse.Namespace) -> int:
+    from llm_tester.agent.calibrate import run_calibration, write_calibration_report
+    from llm_tester.agent.traces import TraceSchemaError, resolve_traces
+    from llm_tester.sentinel.policy import load_policy
+
+    try:
+        traces = resolve_traces(
+            args.dataset,
+            path=args.dataset_path,
+            limit=args.limit,
+            download=args.download_injecagent,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except TraceSchemaError as exc:
+        print(f"Trace schema error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"Failed to load traces: {exc}", file=sys.stderr)
+        return 1
+
+    if len(traces) < 4:
+        print("Need at least 4 traces to calibrate.", file=sys.stderr)
+        return 1
+
+    run_dir = prepare_run_dir(
+        args,
+        "guard-calibrate",
+        name_parts=["guard-calibrate", args.dataset, args.split_by],
+    )
+
+    policy = load_policy(args.policy)
+    policy.enable_s4 = False
+    result = run_calibration(
+        traces,
+        base_policy=policy,
+        strategy=args.split_by,
+        train_frac=args.train_frac,
+        seed=args.seed,
+        objective=args.objective,
+        max_fpr=args.max_fpr,
+    )
+    out_path = args.out or (run_dir / "calibration.json")
+    write_calibration_report(result, out_path)
+
+    held = result["heldout_metrics"]
+    metrics_dict = dict(held)
+    metrics_dict["command"] = "guard-calibrate"
+    metrics_dict["dataset"] = args.dataset
+    metrics_dict["train_metrics"] = result["train_metrics"]
+    metrics_dict["calibrated_policy"] = result["calibrated_policy"]
+
+    config: Dict[str, Any] = {
+        "command": "guard-calibrate",
+        "dataset": args.dataset,
+        "dataset_path": str(args.dataset_path) if args.dataset_path else None,
+        "limit": args.limit,
+        "policy": str(args.policy) if args.policy else None,
+        "objective": args.objective,
+        "max_fpr": args.max_fpr,
+        "split": result["split"],
+        "calibrated_policy": result["calibrated_policy"],
+        "search": result.get("search"),
+    }
+    finalize_run_dir(
+        run_dir,
+        command="guard-calibrate",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
+
+    if args.json:
+        printable = {
+            k: v
+            for k, v in result.items()
+            if k not in ("train_report", "heldout_report")
+        }
+        print(json.dumps(printable, indent=2))
+    else:
+        split = result["split"]
+        cal = result["calibrated_policy"]
+        print(
+            f"=== guard-calibrate dataset={args.dataset} "
+            f"split_by={split['strategy']} seed={split['seed']} ==="
+        )
+        print(
+            f"train_n={len(split['train_ids'])} "
+            f"heldout_n={len(split['heldout_ids'])} "
+            f"train_frac={split['train_frac']}"
+        )
+        print(
+            f"calibrated tau_low={cal['tau_low']} tau_high={cal['tau_high']} "
+            f"aggregation={cal['risk_aggregation']}"
+        )
+        print(result["train_report"])
+        print(result["heldout_report"])
+        print(f"\nWrote split + metrics to {out_path}")
+        print(
+            "Note: thresholds tuned on train only; held-out numbers are the "
+            "unbiased estimate. Preliminary — not published results."
         )
     return 0
 
@@ -1003,6 +1163,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_datasets(args)
     if args.command == "guard-eval":
         return cmd_guard_eval(args)
+    if args.command == "guard-calibrate":
+        return cmd_guard_calibrate(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
     if args.command == "sentinel-proxy":
