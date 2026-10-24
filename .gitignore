@@ -14,6 +14,7 @@ build/
 .env
 .cache/
 *.jsonl
+!llm_tester/data/**/*.jsonl
 test_results.json
 toxicchat_test_results.json
 guarded_results.csv
