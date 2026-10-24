@@ -173,22 +173,37 @@ def _run_trace(guard: SentinelGuard, trace: TraceStep) -> tuple:
     return last, total_ms, escalated
 
 
+def _is_attack_label(label: str) -> bool:
+    return label.lower() in (
+        "attack",
+        "malicious",
+        "adversarial",
+        "1",
+        "true",
+    )
+
+
 def evaluate_traces(
     traces: Sequence[TraceStep],
     guard: Optional[SentinelGuard] = None,
     *,
     policy: Optional[SentinelPolicy] = None,
-) -> EvalMetrics:
+    collect_records: bool = False,
+):
     """
     Run the cascade on each trace.
 
     Attack label → predicted block = TP; predicted allow = FN.
     Benign label → predicted allow = TN; predicted block = FP.
+
+    When ``collect_records`` is True, returns ``(EvalMetrics, list[dict])``
+    with per-trace decisions (for ``results.jsonl.gz`` artefacts).
     """
     g = guard or build_sentinel(policy=policy)
     metrics = EvalMetrics()
+    records: List[Dict[str, Any]] = []
 
-    for trace in traces:
+    for idx, trace in enumerate(traces):
         # Skip completely empty records.
         if (
             not trace.tools
@@ -211,13 +226,7 @@ def evaluate_traces(
         )
         bucket["n"] += 1
 
-        is_attack = trace.label.lower() in (
-            "attack",
-            "malicious",
-            "adversarial",
-            "1",
-            "true",
-        )
+        is_attack = _is_attack_label(trace.label)
         if is_attack:
             metrics.n_attack += 1
             if blocked:
@@ -235,6 +244,25 @@ def evaluate_traces(
                 metrics.tn += 1
                 bucket["tn"] += 1
 
+        if collect_records:
+            trace_id = getattr(trace, "id", None) or f"trace-{idx}"
+            rec: Dict[str, Any] = {
+                "id": str(trace_id),
+                "trace_id": str(trace_id),
+                "label": trace.label,
+                "is_attack": is_attack,
+                "attack_type": at,
+                "decision": getattr(decision.decision, "value", str(decision.decision)),
+                "blocked": blocked,
+                "risk_score": getattr(decision, "risk_score", None),
+                "stage": getattr(decision, "stage", None),
+                "checkpoint": getattr(decision, "checkpoint", None),
+                "escalated": escalated,
+                "latency_ms": latency_ms,
+                "reasons": list(getattr(decision, "reasons", []) or []),
+            }
+            records.append(rec)
+
     if metrics.n_attack:
         metrics.asr_without_guard = 1.0
         metrics.asr_with_guard = metrics.fn / metrics.n_attack
@@ -242,6 +270,8 @@ def evaluate_traces(
         metrics.asr_without_guard = 0.0
         metrics.asr_with_guard = 0.0
 
+    if collect_records:
+        return metrics, records
     return metrics
 
 

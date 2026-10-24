@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,10 +57,6 @@ class ReportStats:
 
 
 def _iter_records(path: Path) -> Iterable[Dict[str, Any]]:
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        return
-
     def _from_jsonl(src: str) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for line in src.splitlines():
@@ -70,6 +67,17 @@ def _iter_records(path: Path) -> Iterable[Dict[str, Any]]:
             if isinstance(obj, dict):
                 rows.append(obj)
         return rows
+
+    if path.name.endswith(".jsonl.gz") or path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            text = fh.read().strip()
+        if text:
+            yield from _from_jsonl(text)
+        return
+
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return
 
     if path.suffix == ".jsonl":
         yield from _from_jsonl(text)

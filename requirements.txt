@@ -3,6 +3,10 @@
 openai>=1.40.0
 python-dotenv>=1.0.0
 datasets>=2.14.0
+PyYAML>=6.0
 llm-guard
 pytest>=7.0
+matplotlib>=3.7.0
+numpy>=1.24.0
 # MCP-Sentinel: pip install -e ".[sentinel]"  (+ sentinel-s3 / sentinel-mcp)
+# Thesis figures: pip install -e ".[figures]"
