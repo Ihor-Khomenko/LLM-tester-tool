@@ -43,17 +43,23 @@ INDEX_COLUMNS = [
 
 
 def _ablation_label(config: Dict[str, Any]) -> str:
+    # Prefer explicit slug written by the CLI.
+    explicit = config.get("ablation")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
     parts: List[str] = []
     for key in ("no_s1", "no_s2", "no_s3", "no_s4", "only_s4"):
         if config.get(key):
             parts.append(key.replace("_", "-"))
-    stages = config.get("stages") or config.get("ablation")
-    if isinstance(stages, str):
-        parts.append(stages)
-    elif isinstance(stages, dict):
-        for s, on in stages.items():
-            if not on:
+    stages = config.get("stages")
+    if isinstance(stages, dict) and not parts:
+        # S4 is off by default — only treat S1–S3 as ablation signals here.
+        for s in ("s1", "s2", "s3"):
+            if stages.get(s) is False:
                 parts.append(f"-{s}")
+        if stages.get("s4") is True:
+            parts.append("+s4")
     return ",".join(parts) if parts else "full"
 
 
