@@ -1,6 +1,6 @@
 """Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
-``ablation``, ``guard-calibrate``, ``agent-bench``, ``index``, ``compare``,
-``figures``.
+``baselines-eval``, ``agentdojo``, ``ablation``, ``guard-calibrate``,
+``agent-bench``, ``index``, ``compare``, ``figures``.
 """
 
 from __future__ import annotations
@@ -268,6 +268,117 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ge.add_argument("--no-seed", action="store_true")
     add_run_dir_args(ge, default_name_help="guard-eval_<dataset>")
+
+    be = sub.add_parser(
+        "baselines-eval",
+        help=(
+            "Evaluate pluggable baselines (spotlighting / prompt_guard2 / "
+            "progent / task_shield / sentinel) on the same traces as guard-eval"
+        ),
+    )
+    be.add_argument(
+        "--baseline",
+        required=True,
+        choices=[
+            "spotlighting",
+            "prompt_guard2",
+            "progent",
+            "task_shield",
+            "sentinel",
+        ],
+        help="Defense baseline to evaluate",
+    )
+    be.add_argument(
+        "--dataset",
+        default="synthetic",
+        choices=["synthetic", "injecagent", "jsonl"],
+    )
+    be.add_argument("--dataset-path", type=Path, default=None)
+    be.add_argument(
+        "--download-injecagent",
+        action="store_true",
+        help="Download InjecAgent (needs network; not for CI)",
+    )
+    be.add_argument("--limit", type=int, default=None)
+    be.add_argument(
+        "--spotlight-mode",
+        default="datamark",
+        choices=["datamark", "encode"],
+        help="Spotlighting transform (Hines et al.)",
+    )
+    be.add_argument(
+        "--prompt-guard-model",
+        default=None,
+        help="HF id or local path for PromptGuard 2 (default Llama-Prompt-Guard-2-22M)",
+    )
+    be.add_argument(
+        "--prompt-guard-threshold",
+        type=float,
+        default=0.5,
+        help="Injection score threshold for PromptGuard 2",
+    )
+    be.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="LLM for task_shield / sentinel S3-llm|S4 (ollama recommended)",
+    )
+    be.add_argument("--model", default=None, help="Model id (e.g. qwen2.5:3b)")
+    be.add_argument("--base-url", default=None)
+    be.add_argument("--policy", type=Path, default=None, help="Sentinel policy (baseline=sentinel)")
+    be.add_argument("--json", action="store_true")
+    be.add_argument("--max-retries", type=int, default=5)
+    be.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    be.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    be.add_argument("--no-seed", action="store_true")
+    add_run_dir_args(be, default_name_help="baselines-eval_<baseline>_<dataset>")
+
+    adj = sub.add_parser(
+        "agentdojo",
+        help=(
+            "AgentDojo-style suite with MCP-Sentinel/baselines as defenses. "
+            "Default --suite mock is offline; --real needs upstream AgentDojo + Ollama"
+        ),
+    )
+    adj.add_argument(
+        "--suite",
+        default="mock",
+        help="mock (CI default) | upstream suite name with --real (e.g. workspace)",
+    )
+    adj.add_argument(
+        "--defense",
+        default="sentinel",
+        choices=[
+            "none",
+            "sentinel",
+            "spotlighting",
+            "prompt_guard2",
+            "progent",
+            "task_shield",
+        ],
+        help="Defense plugged into the suite",
+    )
+    adj.add_argument(
+        "--real",
+        action="store_true",
+        help="Load upstream AgentDojo suite (requires package; not for CI)",
+    )
+    adj.add_argument("--limit", type=int, default=None)
+    adj.add_argument("--policy", type=Path, default=None)
+    adj.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="LLM for task_shield / live agent path (ollama recommended)",
+    )
+    adj.add_argument("--model", default=None, help="e.g. qwen2.5:3b")
+    adj.add_argument("--base-url", default=None)
+    adj.add_argument("--json", action="store_true")
+    adj.add_argument("--max-retries", type=int, default=5)
+    adj.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    adj.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    adj.add_argument("--no-seed", action="store_true")
+    add_run_dir_args(adj, default_name_help="agentdojo_<suite>_<defense>")
 
     abl = sub.add_parser(
         "ablation",
@@ -732,6 +843,209 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agentdojo(args: argparse.Namespace) -> int:
+    from llm_tester.agent.agentdojo_adapter import (
+        format_agentdojo_summary,
+        load_real_agentdojo_tasks,
+        mock_agentdojo_suite,
+        run_agentdojo_suite,
+    )
+    from llm_tester.agent.provider_adapter import build_llm_chat
+
+    if args.real:
+        try:
+            tasks = load_real_agentdojo_tasks(args.suite, limit=args.limit)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    else:
+        if args.suite not in ("mock", "default", "ci"):
+            print(
+                f"Unknown offline suite {args.suite!r}. Use --suite mock, or "
+                f"--real with an upstream suite name.",
+                file=sys.stderr,
+            )
+            return 2
+        tasks = mock_agentdojo_suite(limit=args.limit)
+
+    llm = None
+    if args.provider:
+        llm = build_llm_chat(
+            args.provider,
+            args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            max_retries=args.max_retries,
+        )
+
+    summary, results = run_agentdojo_suite(
+        tasks,
+        defense_name=args.defense,
+        llm_provider=llm,
+        policy_path=args.policy,
+    )
+
+    run_dir = prepare_run_dir(
+        args,
+        "agentdojo",
+        name_parts=["agentdojo", args.suite, args.defense],
+    )
+    with open_results_writer(run_dir, append=False) as writer:
+        for rec in results:
+            writer.write(rec.to_dict())
+
+    metrics_dict = summary.to_metrics()
+    metrics_dict["command"] = "agentdojo"
+    metrics_dict["suite"] = args.suite
+    metrics_dict["defense"] = args.defense
+    metrics_dict["real"] = bool(args.real)
+    config = {
+        "command": "agentdojo",
+        "suite": args.suite,
+        "defense": args.defense,
+        "real": bool(args.real),
+        "limit": args.limit,
+        "provider": args.provider,
+        "model": args.model,
+    }
+    finalize_run_dir(
+        run_dir,
+        command="agentdojo",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model,
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
+    if args.json:
+        print(json.dumps(metrics_dict, indent=2))
+    else:
+        print(
+            format_agentdojo_summary(
+                summary,
+                title=f"agentdojo suite={args.suite} defense={args.defense}",
+            )
+        )
+    return 0
+
+
+def cmd_baselines_eval(args: argparse.Namespace) -> int:
+    from llm_tester.agent.eval import evaluate_traces, format_metrics
+    from llm_tester.agent.provider_adapter import build_llm_chat
+    from llm_tester.agent.traces import TraceSchemaError, resolve_traces
+    from llm_tester.baselines.registry import build_baseline
+
+    try:
+        traces = resolve_traces(
+            args.dataset,
+            path=args.dataset_path,
+            limit=args.limit,
+            download=args.download_injecagent,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except TraceSchemaError as exc:
+        print(f"Trace schema error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"Failed to load traces: {exc}", file=sys.stderr)
+        return 1
+
+    if not traces:
+        print("No traces loaded.", file=sys.stderr)
+        return 1
+
+    llm = None
+    if args.provider:
+        llm = build_llm_chat(
+            args.provider,
+            args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            max_retries=args.max_retries,
+        )
+    elif args.baseline == "task_shield":
+        print(
+            "Warning: task_shield without --provider will skip (ALLOW all). "
+            "Use --provider ollama --model qwen2.5:3b for real runs.",
+            file=sys.stderr,
+        )
+
+    sentinel_kwargs: Dict[str, Any] = {}
+    if args.baseline == "sentinel":
+        from llm_tester.sentinel.policy import load_policy
+
+        pol = load_policy(args.policy)
+        pol.enable_s4 = False  # offline default; enable via provider + future flag
+        sentinel_kwargs["policy"] = pol
+
+    guard = build_baseline(
+        args.baseline,
+        llm_provider=llm,
+        spotlight_mode=args.spotlight_mode,
+        prompt_guard_model=args.prompt_guard_model,
+        prompt_guard_threshold=args.prompt_guard_threshold,
+        sentinel_kwargs=sentinel_kwargs or None,
+    )
+    if getattr(guard, "skip_reason", None) and not getattr(guard, "available", True):
+        print(f"Note: {guard.skip_reason}", file=sys.stderr)
+
+    run_dir = prepare_run_dir(
+        args,
+        "baselines-eval",
+        name_parts=["baselines-eval", args.baseline, args.dataset],
+    )
+    metrics, records = evaluate_traces(traces, guard, collect_records=True)
+    with open_results_writer(run_dir, append=False) as writer:
+        for rec in records:
+            writer.write(rec)
+
+    metrics_dict = metrics.to_dict()
+    metrics_dict["dataset"] = args.dataset
+    metrics_dict["command"] = "baselines-eval"
+    metrics_dict["baseline"] = args.baseline
+    metrics_dict["baseline_available"] = bool(getattr(guard, "available", True))
+    config: Dict[str, Any] = {
+        "command": "baselines-eval",
+        "baseline": args.baseline,
+        "dataset": args.dataset,
+        "dataset_path": str(args.dataset_path) if args.dataset_path else None,
+        "limit": args.limit,
+        "spotlight_mode": args.spotlight_mode,
+        "prompt_guard_model": args.prompt_guard_model,
+        "prompt_guard_threshold": args.prompt_guard_threshold,
+        "provider": args.provider,
+        "model": args.model,
+        "baseline_available": bool(getattr(guard, "available", True)),
+        "skip_reason": getattr(guard, "skip_reason", None),
+    }
+    finalize_run_dir(
+        run_dir,
+        command="baselines-eval",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model,
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
+    if args.json:
+        print(json.dumps(metrics_dict, indent=2))
+    else:
+        print(
+            format_metrics(
+                metrics, title=f"baselines-eval baseline={args.baseline} dataset={args.dataset}"
+            )
+        )
+    return 0
+
+
 def cmd_ablation(args: argparse.Namespace) -> int:
     from llm_tester.agent.ablation import format_ablation_table, run_ablation_matrix
     from llm_tester.agent.traces import TraceSchemaError, resolve_traces
@@ -836,7 +1150,6 @@ def cmd_ablation(args: argparse.Namespace) -> int:
     else:
         print(format_ablation_table(result))
     return 0
-
 
 def cmd_guard_calibrate(args: argparse.Namespace) -> int:
     from llm_tester.agent.calibrate import (
@@ -1335,6 +1648,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_datasets(args)
     if args.command == "guard-eval":
         return cmd_guard_eval(args)
+    if args.command == "baselines-eval":
+        return cmd_baselines_eval(args)
+    if args.command == "agentdojo":
+        return cmd_agentdojo(args)
     if args.command == "ablation":
         return cmd_ablation(args)
     if args.command == "guard-calibrate":
