@@ -85,6 +85,20 @@ class SentinelGuard:
         peak = 0.0
         details: Dict[str, Any] = {"tools": []}
 
+        if not self.policy.enable_t0:
+            elapsed = (time.perf_counter() - start) * 1000
+            result = GuardDecision(
+                decision=Decision.ALLOW,
+                risk_score=0.0,
+                stage="T0",
+                checkpoint=Checkpoint.T0.value,
+                reasons=["t0:disabled"],
+                latency_ms=elapsed,
+                meta={"t0_disabled": True},
+            )
+            self.logger.log(result)
+            return result
+
         for raw in tools:
             tool = raw if isinstance(raw, ToolSpec) else ToolSpec(
                 name=str(raw.get("name", "")),
@@ -145,7 +159,23 @@ class SentinelGuard:
         sanitize: bool = True,
     ) -> GuardDecision:
         start = time.perf_counter()
+        # Always record provenance for S2 even when T1 scanning is ablated.
         self.taint.mark_output(source, content or "")
+
+        if not self.policy.enable_t1:
+            elapsed = (time.perf_counter() - start) * 1000
+            result = GuardDecision(
+                decision=Decision.ALLOW,
+                risk_score=0.0,
+                stage="T1",
+                checkpoint=Checkpoint.T1.value,
+                reasons=["t1:disabled"],
+                latency_ms=elapsed,
+                sanitized_content=content,
+                meta={"source": source, "t1_disabled": True},
+            )
+            self.logger.log(result)
+            return result
 
         s1 = (
             self.rules.scan_text(content or "")

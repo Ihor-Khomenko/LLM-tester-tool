@@ -65,7 +65,7 @@ class SentinelPolicy:
     tau_low: float = 0.25
     tau_high: float = 0.70
 
-    # How enabled stage scores combine: noisy_or (monotone) | max.
+    # How enabled stage scores combine: noisy_or (monotone) | max | weighted.
     risk_aggregation: str = "noisy_or"
 
     # Stage enable flags (ablation).
@@ -73,6 +73,9 @@ class SentinelPolicy:
     enable_s2: bool = True
     enable_s3: bool = True
     enable_s4: bool = False  # optional / expensive; off by default
+    # Checkpoint enable flags (ablation: with/without T0 / T1).
+    enable_t0: bool = True
+    enable_t1: bool = True
 
     # Stage weights kept for backwards-compat / reporting; aggregation no longer
     # dilutes via weighted averages of disabled stages.
