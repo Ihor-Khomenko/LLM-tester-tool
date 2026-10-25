@@ -85,6 +85,20 @@ class SentinelGuard:
         peak = 0.0
         details: Dict[str, Any] = {"tools": []}
 
+        if not self.policy.enable_t0:
+            elapsed = (time.perf_counter() - start) * 1000
+            result = GuardDecision(
+                decision=Decision.ALLOW,
+                risk_score=0.0,
+                stage="T0",
+                checkpoint=Checkpoint.T0.value,
+                reasons=["t0:disabled"],
+                latency_ms=elapsed,
+                meta={"t0_disabled": True},
+            )
+            self.logger.log(result)
+            return result
+
         for raw in tools:
             tool = raw if isinstance(raw, ToolSpec) else ToolSpec(
                 name=str(raw.get("name", "")),
@@ -145,7 +159,23 @@ class SentinelGuard:
         sanitize: bool = True,
     ) -> GuardDecision:
         start = time.perf_counter()
+        # Always record provenance for S2 even when T1 scanning is ablated.
         self.taint.mark_output(source, content or "")
+
+        if not self.policy.enable_t1:
+            elapsed = (time.perf_counter() - start) * 1000
+            result = GuardDecision(
+                decision=Decision.ALLOW,
+                risk_score=0.0,
+                stage="T1",
+                checkpoint=Checkpoint.T1.value,
+                reasons=["t1:disabled"],
+                latency_ms=elapsed,
+                sanitized_content=content,
+                meta={"source": source, "t1_disabled": True},
+            )
+            self.logger.log(result)
+            return result
 
         s1 = (
             self.rules.scan_text(content or "")
@@ -244,16 +274,29 @@ class SentinelGuard:
                 reasons,
             )
             stage_scores.append(s4)
-            risk = s4.score
             reasons = list(reasons) + list(s4.reasons)
-            decision = decide_from_risk(
-                risk,
-                self.policy,
-                has_s4_verdict=True,
-                s4_score=s4.score,
-                stage_scores=stage_scores,
+            deferred = "s4:ambiguous_defer" in s4.reasons or bool(
+                (s4.details or {}).get("deferred_to_prior")
             )
-            final_stage = "S4"
+            if deferred:
+                # Keep pre-S4 cascade risk; do not treat ambiguous output as BLOCK.
+                # S4 already ran — never re-escalate. Grey-zone / S3-uncertain → ALLOW.
+                decision = decide_from_risk(
+                    risk, self.policy, stage_scores=stage_scores
+                )
+                if decision == Decision.ESCALATE:
+                    decision = Decision.ALLOW
+                final_stage = "cascade"
+            else:
+                risk = s4.score
+                decision = decide_from_risk(
+                    risk,
+                    self.policy,
+                    has_s4_verdict=True,
+                    s4_score=s4.score,
+                    stage_scores=stage_scores,
+                )
+                final_stage = "S4"
         elif decision == Decision.ESCALATE:
             # S4 requested but unavailable → fail closed (block).
             decision = Decision.BLOCK

@@ -22,19 +22,24 @@ def aggregate_risk(
     - ``noisy_or`` (default): ``1 - ∏(1 - s_i)`` — ablating a stage cleanly
       removes its factor; no dilution by zero-weight averages.
     - ``max``: peak of enabled scores.
+    - ``weighted``: normalised weighted mean using ``weight_s1/s2/s3`` for
+      stages present in ``scores`` (disabled stages omitted — no zero dilution).
     """
     if not scores:
         return 0.0, []
 
     reasons: List[str] = []
     active: List[float] = []
+    weighted_pairs: List[Tuple[str, float]] = []
 
     for s in scores:
         if s.stage == "S4":
             # S4 verdict replaces the cascade score when present.
             return float(min(1.0, max(0.0, s.score))), list(s.reasons)
         reasons.extend(s.reasons)
-        active.append(float(min(1.0, max(0.0, s.score))))
+        val = float(min(1.0, max(0.0, s.score)))
+        active.append(val)
+        weighted_pairs.append((s.stage.upper(), val))
 
     if not active:
         return 0.0, reasons
@@ -42,6 +47,21 @@ def aggregate_risk(
     mode = (policy.risk_aggregation or "noisy_or").lower().strip()
     if mode == "max":
         risk = max(active)
+    elif mode == "weighted":
+        weight_map = {
+            "S1": float(policy.weight_s1),
+            "S2": float(policy.weight_s2),
+            "S3": float(policy.weight_s3),
+        }
+        num = 0.0
+        den = 0.0
+        for stage, val in weighted_pairs:
+            w = weight_map.get(stage, 1.0)
+            if w <= 0:
+                continue
+            num += w * val
+            den += w
+        risk = (num / den) if den else max(active)
     else:
         # noisy-OR (default)
         surv = 1.0

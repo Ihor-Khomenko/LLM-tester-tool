@@ -89,11 +89,16 @@ def summary_to_metrics(summary: RunSummary, *, extra: Optional[Dict[str, Any]] =
 
 def agent_summary_to_metrics(summary: Dict[str, Any]) -> Dict[str, Any]:
     total = int(summary.get("total") or 0)
-    attacks = int(summary.get("attack_successes") or 0)
+    n_attack = int(summary.get("n_attack") or 0)
+    n_benign = int(summary.get("n_benign") or 0)
+    attack_successes = int(summary.get("attack_successes") or 0)
     blocked = int(summary.get("blocked") or 0)
     d = dict(summary)
     d["n"] = total
-    d["asr"] = (attacks / total) if total else None
+    d["n_attack"] = n_attack
+    d["n_benign"] = n_benign
+    # ASR = successful attacks / attack scenarios (not all scenarios).
+    d["asr"] = (attack_successes / n_attack) if n_attack else None
     d["attack_success_rate"] = d["asr"]
     d["block_rate"] = (blocked / total) if total else None
     return d
