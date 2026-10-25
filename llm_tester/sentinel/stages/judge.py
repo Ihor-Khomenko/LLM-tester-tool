@@ -294,31 +294,59 @@ class JudgeStage:
             except TypeError:
                 result = client.chat(prompt, system=system)
             content = extract_chat_text(result)
-            verdict, parse_details = parse_judge_verdict(
-                content,
-                family=family,
-                ambiguous=self.policy.s4_ambiguous_policy,
-            )
-            details = {
-                "family": family,
-                **parse_details,
-                "raw": content[:500],
-                "llm_calls": 1,
-                "prompt_hash": prompt_hash,
-                "temperature": S4_TEMPERATURE,
-                "seed": int(seed),
-            }
-            if verdict is None:
-                # Defer to prior cascade (typically S3-driven grey-zone risk).
-                score = float(prior_risk)
-                reasons = ["s4:ambiguous_defer"]
-                details["deferred_to_prior"] = True
+            # Empty body is a hard parse failure (not soft ambiguity).
+            if not (content or "").strip():
+                score = 0.95
+                reasons = ["s4:error", "s4:parse_error"]
+                details = {
+                    "family": family,
+                    "error": "empty_judge_response",
+                    "raw": "",
+                    "llm_calls": 1,
+                    "prompt_hash": prompt_hash,
+                    "temperature": S4_TEMPERATURE,
+                    "seed": int(seed),
+                    "fail_closed": True,
+                    "decision_error": True,
+                }
             else:
-                score = 0.95 if verdict == Decision.BLOCK else 0.05
-                reasons = [f"s4:{verdict.value}"]
-                details["verdict"] = verdict.value
+                verdict, parse_details = parse_judge_verdict(
+                    content,
+                    family=family,
+                    ambiguous=self.policy.s4_ambiguous_policy,
+                )
+                details = {
+                    "family": family,
+                    **parse_details,
+                    "raw": content[:500],
+                    "llm_calls": 1,
+                    "prompt_hash": prompt_hash,
+                    "temperature": S4_TEMPERATURE,
+                    "seed": int(seed),
+                    "decision_error": False,
+                }
+                if verdict is None:
+                    # Soft ambiguity: respect policy (default defer). Not an error.
+                    amb = (self.policy.s4_ambiguous_policy or AmbiguousPolicy.DEFER.value).lower()
+                    if amb == AmbiguousPolicy.BLOCK.value:
+                        score = 0.95
+                        reasons = ["s4:ambiguous_block"]
+                        details["fail_closed"] = True
+                        details["decision_error"] = True
+                    elif amb == AmbiguousPolicy.ALLOW.value:
+                        score = 0.05
+                        reasons = ["s4:ambiguous_allow"]
+                    else:
+                        score = float(prior_risk)
+                        reasons = ["s4:ambiguous_defer"]
+                        details["deferred_to_prior"] = True
+                else:
+                    score = 0.95 if verdict == Decision.BLOCK else 0.05
+                    reasons = [f"s4:{verdict.value}"]
+                    details["verdict"] = verdict.value
         except Exception as exc:
-            score = prior_risk
+            # HTTP 4xx/5xx, timeout, etc. → fail closed + decision_error.
+            score = 0.95
             reasons = ["s4:error"]
             details = {
                 "error": str(exc),
@@ -327,6 +355,8 @@ class JudgeStage:
                 "prompt_hash": prompt_hash,
                 "temperature": S4_TEMPERATURE,
                 "seed": int(seed) if seed is not None else None,
+                "fail_closed": True,
+                "decision_error": True,
             }
 
         elapsed = (time.perf_counter() - start) * 1000

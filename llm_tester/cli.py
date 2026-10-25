@@ -1068,7 +1068,8 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
         "model": args.model,
         "baseline_available": bool(getattr(guard, "available", True)),
         "skip_reason": getattr(guard, "skip_reason", None),
-        "errors": metrics.errors,
+        "errors": metrics.n_errors,
+        "n_errors": metrics.n_errors,
     }
     finalize_run_dir(
         run_dir,
@@ -1081,10 +1082,10 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
         extra_sha=parse_extra_sha(args.extra_sha),
     )
     print(f"Run artefacts written to {run_dir}")
-    if metrics.errors:
+    if metrics.n_errors:
         print(
-            f"ERROR: baseline reported {metrics.errors} provider/config error(s). "
-            f"Last: {last_err or '(see metrics.errors)'}",
+            f"ERROR: baseline reported {metrics.n_errors} decision_error case(s). "
+            f"Last: {last_err or '(see metrics.n_errors)'}",
             file=sys.stderr,
         )
     if args.json:
@@ -1096,7 +1097,7 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
             )
         )
     # Non-zero exit when every case errored (silent-ALLOW regression).
-    if metrics.n and metrics.errors >= metrics.n:
+    if metrics.n and metrics.n_errors >= metrics.n:
         return 3
     return 0
 

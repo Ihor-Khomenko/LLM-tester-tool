@@ -111,8 +111,9 @@ def test_task_shield_parse_leading_verdict_only():
         )
         == Decision.ALLOW
     )
-    # Empty / ambiguous → ALLOW (utility).
-    assert parse_task_shield_verdict("hmm unclear") == Decision.ALLOW
+    # Empty / ambiguous → None (caller fail-closes with decision_error).
+    assert parse_task_shield_verdict("hmm unclear") is None
+    assert parse_task_shield_verdict("") is None
 
 
 def test_task_shield_prompt_has_few_shot_and_allow_criteria():

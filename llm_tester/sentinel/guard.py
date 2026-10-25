@@ -275,10 +275,19 @@ class SentinelGuard:
             )
             stage_scores.append(s4)
             reasons = list(reasons) + list(s4.reasons)
+            s4_error = bool((s4.details or {}).get("decision_error")) or any(
+                r in ("s4:error", "s4:parse_error") for r in (s4.reasons or [])
+            )
             deferred = "s4:ambiguous_defer" in s4.reasons or bool(
                 (s4.details or {}).get("deferred_to_prior")
             )
-            if deferred:
+            if s4_error:
+                # Provider/parse failure → fail closed (BLOCK).
+                risk = max(float(s4.score), 0.95)
+                decision = Decision.BLOCK
+                final_stage = "S4"
+                reasons = list(reasons) + ["s4:fail_closed"]
+            elif deferred:
                 # Keep pre-S4 cascade risk; do not treat ambiguous output as BLOCK.
                 # S4 already ran — never re-escalate. Grey-zone / S3-uncertain → ALLOW.
                 decision = decide_from_risk(
@@ -311,8 +320,19 @@ class SentinelGuard:
 
         elapsed = (time.perf_counter() - start) * 1000
         llm_calls = 0
+        decision_error = False
         for s in stage_scores:
             llm_calls += int((s.details or {}).get("llm_calls") or 0)
+            if (s.details or {}).get("decision_error"):
+                decision_error = True
+        if any(
+            str(r) in ("s4:error", "s4:parse_error", "s4:unavailable_fail_closed")
+            or str(r).endswith(":error")
+            for r in reasons
+        ):
+            decision_error = True
+        if decision == Decision.BLOCK and "s4:unavailable_fail_closed" in reasons:
+            decision_error = True
         result = GuardDecision(
             decision=decision,
             risk_score=float(min(1.0, risk)),
@@ -325,6 +345,12 @@ class SentinelGuard:
             meta={
                 "call": {"name": call.name, "arguments": call.arguments},
                 "llm_calls": llm_calls,
+                "decision_error": bool(decision_error),
+                **(
+                    {"error": True, "fail_closed": True}
+                    if decision_error
+                    else {}
+                ),
             },
         )
         self.logger.log(result)
