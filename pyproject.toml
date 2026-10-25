@@ -35,6 +35,8 @@ sentinel-all = [
 figures = ["matplotlib>=3.7.0", "numpy>=1.24.0"]
 # PromptGuard 2 baseline (CPU fine). Weights fetched separately — see baselines/README.md.
 baselines-prompt-guard = ["transformers>=4.40.0", "torch"]
+# AgentDojo real suites (llmtest agentdojo --real). Requires Python >=3.10.
+agentdojo = ["agentdojo>=0.1.35,<0.2; python_version>='3.10'"]
 dev = ["pytest>=7.0", "PyYAML>=6.0", "matplotlib>=3.7.0", "numpy>=1.24.0"]
 all = [
     "llm-guard",

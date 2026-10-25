@@ -6,12 +6,16 @@ injects a mock provider — never calls OpenRouter.
 Small local models often emit prose that mentions the word ``BLOCK`` even when
 allowing; parsing uses the leading verdict token only. Prompts include few-shot
 ALLOW examples and explicit authorization criteria to keep FPR usable.
+
+``RunParams`` is frozen — never mutate ``provider.params``; CLI already builds
+providers at temperature 0.
 """
 
 from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Union
 
 from llm_tester.baselines.protocol import BaseGuard, allow_decision, as_tool_call
@@ -98,12 +102,10 @@ def parse_task_shield_verdict(text: str) -> Decision:
     if not raw:
         return Decision.ALLOW
 
-    # Prefer the first non-empty line that starts with ALLOW/BLOCK.
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
-        # Skip labels like "Verdict:"
         if line.lower() in ("verdict:", "verdict", "answer:", "answer"):
             continue
         m = _VERDICT_LINE.match(line)
@@ -113,10 +115,8 @@ def parse_task_shield_verdict(text: str) -> Decision:
                 if m.group(1).upper() == "BLOCK"
                 else Decision.ALLOW
             )
-        # Stop after the first substantive non-verdict line (avoid body matches).
         break
 
-    # Fallback: first ALLOW/BLOCK as a whole-word at line start anywhere.
     m2 = _VERDICT_LINE.search(raw)
     if m2:
         return Decision.BLOCK if m2.group(1).upper() == "BLOCK" else Decision.ALLOW
@@ -124,7 +124,6 @@ def parse_task_shield_verdict(text: str) -> Decision:
     return Decision.ALLOW
 
 
-# Back-compat alias used by older tests / imports.
 def _parse_allow_block(text: str) -> Decision:
     return parse_task_shield_verdict(text)
 
@@ -147,6 +146,35 @@ def build_task_shield_prompt(
     )
 
 
+def _provider_with_temperature(provider: Any, temperature: float) -> Any:
+    """
+    Return a provider configured at ``temperature`` without mutating frozen params.
+
+    ``RunParams`` is ``frozen=True`` — assignment to ``params.temperature`` raises
+    and previously caused every Task-Shield call to fall into the silent ALLOW path.
+    """
+    params = getattr(provider, "params", None)
+    if params is None:
+        return provider
+    current = getattr(params, "temperature", None)
+    if current is not None and abs(float(current) - float(temperature)) < 1e-12:
+        return provider  # already at the requested temperature
+    try:
+        new_params = replace(params, temperature=float(temperature))
+    except Exception:
+        # Non-dataclass / incompatible — leave provider unchanged (chat still runs).
+        return provider
+    # Prefer copy.copy so SimpleNamespace / LLMProvider keep other attributes.
+    import copy
+
+    try:
+        clone = copy.copy(provider)
+        clone.params = new_params
+        return clone
+    except Exception:
+        return provider
+
+
 class TaskShieldGuard(BaseGuard):
     """LLM checker; ``provider`` must expose ``.chat(prompt, system=...)``."""
 
@@ -164,6 +192,8 @@ class TaskShieldGuard(BaseGuard):
         self.model_hint = model_hint
         self.temperature = float(temperature)
         self.available = provider is not None
+        self.error_count = 0
+        self.last_error: Optional[str] = None
         self.skip_reason = (
             None
             if self.available
@@ -172,6 +202,10 @@ class TaskShieldGuard(BaseGuard):
                 "Pass --provider ollama --model qwen2.5:3b for real runs."
             )
         )
+
+    def reset_session(self, *, keep_registry: bool = True) -> None:
+        super().reset_session(keep_registry=keep_registry)
+        # Keep cumulative error_count across the eval run (not per-trace).
 
     def on_tool_output(
         self, source: str, content: str, *, sanitize: bool = True
@@ -187,24 +221,15 @@ class TaskShieldGuard(BaseGuard):
         )
 
     def _chat(self, prompt: str) -> Any:
-        """Call provider at temperature 0 when supported."""
+        """Call provider; never mutate frozen ``RunParams``."""
         assert self.provider is not None
-        # Prefer mutating RunParams when present (LLMProvider).
-        params = getattr(self.provider, "params", None)
-        old_temp = None
-        if params is not None and hasattr(params, "temperature"):
-            old_temp = params.temperature
-            params.temperature = self.temperature
+        client = _provider_with_temperature(self.provider, self.temperature)
         try:
-            try:
-                return self.provider.chat(
-                    prompt, system=SYSTEM, temperature=self.temperature
-                )
-            except TypeError:
-                return self.provider.chat(prompt, system=SYSTEM)
-        finally:
-            if params is not None and old_temp is not None:
-                params.temperature = old_temp
+            return client.chat(
+                prompt, system=SYSTEM, temperature=self.temperature
+            )
+        except TypeError:
+            return client.chat(prompt, system=SYSTEM)
 
     def check_tool_call(
         self,
@@ -237,7 +262,7 @@ class TaskShieldGuard(BaseGuard):
             decision = parse_task_shield_verdict(content)
             risk = 0.9 if decision == Decision.BLOCK else 0.05
             reasons = [f"task_shield:{decision.value}"]
-            meta = {
+            meta: Dict[str, Any] = {
                 "available": True,
                 "raw": (content or "")[:300],
                 "llm_calls": 1,
@@ -245,10 +270,19 @@ class TaskShieldGuard(BaseGuard):
                 "temperature": self.temperature,
             }
         except Exception as exc:
-            decision = Decision.ALLOW
-            risk = 0.0
+            # Fail closed + loud: never silent ALLOW on provider/config errors.
+            self.error_count += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.llm_calls += 1
+            decision = Decision.BLOCK
+            risk = 1.0
             reasons = ["task_shield:error"]
-            meta = {"error": str(exc), "llm_calls": 1}
+            meta = {
+                "available": True,
+                "error": self.last_error,
+                "llm_calls": 1,
+                "fail_closed": True,
+            }
 
         return allow_decision(
             checkpoint=Checkpoint.T2.value,

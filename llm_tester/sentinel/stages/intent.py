@@ -123,12 +123,14 @@ class IntentStage:
                     sim, details = lite_similarity(user, verbalized)
                     details["llm_raw"] = raw[:300]
                     details["backend"] = "llm+lite_fallback"
+                    details["llm_calls"] = 1
                     return sim, details
-                return sim, {"backend": "llm", "raw": raw[:300]}
+                return sim, {"backend": "llm", "raw": raw[:300], "llm_calls": 1}
             except Exception as exc:
                 sim, details = lite_similarity(user, verbalized)
                 details["llm_error"] = str(exc)
                 details["backend"] = "llm+lite_fallback"
+                details["llm_calls"] = 1
                 return sim, details
 
         if self._backend == "embeddings" and self._model is not None:

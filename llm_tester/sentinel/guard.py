@@ -310,6 +310,9 @@ class SentinelGuard:
                 final_stage = top.stage
 
         elapsed = (time.perf_counter() - start) * 1000
+        llm_calls = 0
+        for s in stage_scores:
+            llm_calls += int((s.details or {}).get("llm_calls") or 0)
         result = GuardDecision(
             decision=decision,
             risk_score=float(min(1.0, risk)),
@@ -319,7 +322,10 @@ class SentinelGuard:
             latency_ms=elapsed,
             stage_scores=stage_scores,
             escalated=escalated,
-            meta={"call": {"name": call.name, "arguments": call.arguments}},
+            meta={
+                "call": {"name": call.name, "arguments": call.arguments},
+                "llm_calls": llm_calls,
+            },
         )
         self.logger.log(result)
         return result
