@@ -139,19 +139,55 @@ def run_ablation_matrix(
     }
 
 
+PRIMARY_CELL_NAME = "full|noisy_or|T0+T1"
+
+
+def pick_primary_cell(result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Cell written to run-dir ``metrics.json``.
+
+    Prefer the full-system default (``full|noisy_or|T0+T1``). The complete
+    matrix always lives in ``ablation_matrix.json`` / ``ablation_summary.csv``.
+    """
+    cells = list(result.get("cells") or [])
+    if not cells:
+        return None
+    for c in cells:
+        if c.get("name") == PRIMARY_CELL_NAME:
+            return c
+    for c in cells:
+        if (
+            c.get("stages") == "full"
+            and c.get("aggregation") == "noisy_or"
+            and c.get("checkpoints") == "T0+T1"
+        ):
+            return c
+    # Last resort: any full stack, else last cell (not first / S1-only).
+    for c in reversed(cells):
+        if c.get("stages") == "full":
+            return c
+    return cells[-1]
+
+
 def format_ablation_table(result: Dict[str, Any]) -> str:
+    primary = pick_primary_cell(result)
+    primary_name = primary["name"] if primary else "(none)"
     lines = [
         "=== ablation matrix ===",
         f"cells={result['n_cells']} traces={result['n_traces']}",
+        f"metrics.json primary cell: {primary_name} "
+        f"(full matrix → ablation_matrix.json)",
         f"{'name':<32} {'TPR':>7} {'FPR':>7} {'F1':>7} {'ASR':>7}",
     ]
     for cell in result["cells"]:
         m = cell["metrics"]
+
         def pct(x):
             return "n/a" if x is None else f"{100.0 * float(x):5.1f}%"
 
+        mark = "*" if primary and cell["name"] == primary["name"] else " "
         lines.append(
-            f"{cell['name']:<32} "
+            f"{mark}{cell['name']:<31} "
             f"{pct(m.get('tpr')):>7} "
             f"{pct(m.get('fpr')):>7} "
             f"{pct(m.get('f1')):>7} "
