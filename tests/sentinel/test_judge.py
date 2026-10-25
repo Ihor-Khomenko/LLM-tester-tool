@@ -171,6 +171,33 @@ def test_judge_with_mock_provider():
     assert "s4:block" in score.reasons
 
 
+def test_judge_logs_prompt_hash_and_forces_temperature_zero():
+    from llm_tester.config import RunParams
+    from llm_tester.sentinel.stages.judge import S4_TEMPERATURE
+
+    provider = MagicMock()
+    provider.model = "tiny-judge"
+    provider.params = RunParams(temperature=0.7, seed=7)
+    provider.chat.return_value = ChatResult(content="ALLOW ok", latency_s=0.01)
+
+    stage = JudgeStage(provider=provider)
+    call = ToolCall(name="notes.read", arguments={"note_id": "1"})
+    score = stage.judge("summarise note:1", call, ["hello"], 0.4, ["s3:soft"])
+    assert score.details.get("temperature") == S4_TEMPERATURE
+    assert score.details.get("seed") == 7
+    ph = score.details.get("prompt_hash")
+    assert isinstance(ph, str) and len(ph) == 64
+
+    # Same inputs → same hash; different prior risk → different hash.
+    score2 = stage.judge("summarise note:1", call, ["hello"], 0.4, ["s3:soft"])
+    assert score2.details["prompt_hash"] == ph
+    score3 = stage.judge("summarise note:1", call, ["hello"], 0.9, ["s3:soft"])
+    assert score3.details["prompt_hash"] != ph
+
+    # Original provider params must stay untouched (frozen / shared).
+    assert provider.params.temperature == 0.7
+
+
 def test_judge_unavailable():
     stage = JudgeStage(provider=None)
     assert not stage.available

@@ -22,6 +22,48 @@ from llm_tester.sentinel.types import StageScore, ToolCall
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_@./:+-]{2,}")
 
+_MONTHS = {
+    "january": 1,
+    "jan": 1,
+    "february": 2,
+    "feb": 2,
+    "march": 3,
+    "mar": 3,
+    "april": 4,
+    "apr": 4,
+    "may": 5,
+    "june": 6,
+    "jun": 6,
+    "july": 7,
+    "jul": 7,
+    "august": 8,
+    "aug": 8,
+    "september": 9,
+    "sep": 9,
+    "sept": 9,
+    "october": 10,
+    "oct": 10,
+    "november": 11,
+    "nov": 11,
+    "december": 12,
+    "dec": 12,
+}
+
+# "February 28th" / "Feb 28" / "February 28, 2022"
+_DATE_RE = re.compile(
+    r"\b("
+    + "|".join(_MONTHS.keys())
+    + r")\s+(\d{1,2})(?:st|nd|rd|th)?"
+    r"(?:\s*,?\s*(\d{4}))?\b",
+    re.I,
+)
+# "2 PM" / "2:00 PM" / "14:00" / "2 p.m."
+_TIME_RE = re.compile(
+    r"\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b"
+    r"|\b([01]?\d|2[0-3]):([0-5]\d)\b",
+    re.I,
+)
+
 
 def tokenize(text: str) -> List[str]:
     if not text:
@@ -34,6 +76,100 @@ def char_ngrams(text: str, n: int = 3) -> Set[str]:
     if len(s) < n:
         return {s} if s else set()
     return {s[i : i + n] for i in range(len(s) - n + 1)}
+
+
+def _hour24(hour: int, ampm: Optional[str]) -> int:
+    h = hour % 24
+    if not ampm:
+        return h
+    ap = ampm.lower().replace(".", "")
+    if ap.startswith("p") and h != 12:
+        return h + 12
+    if ap.startswith("a") and h == 12:
+        return 0
+    return h
+
+
+def normalize_temporal_aliases(
+    text: str,
+    *,
+    default_year: int = 2022,
+) -> str:
+    """
+    Expand natural-language dates/times into ISO-like aliases.
+
+    Used so S2 attribution treats args like ``2022-02-28T14:00`` as matching
+    a user request that said ``February 28th from 2 PM`` (InjecAgent shared-
+    calendar benign template) rather than attributing them to tool output.
+    """
+    if not text:
+        return ""
+    aliases: List[str] = []
+    dates: List[Tuple[int, int, int]] = []  # y, m, d
+
+    for m in _DATE_RE.finditer(text):
+        month = _MONTHS[m.group(1).lower()]
+        day = int(m.group(2))
+        year = int(m.group(3)) if m.group(3) else int(default_year)
+        dates.append((year, month, day))
+        iso_date = f"{year:04d}-{month:02d}-{day:02d}"
+        aliases.extend(
+            [
+                iso_date,
+                f"{year:04d}/{month:02d}/{day:02d}",
+                f"{month:02d}/{day:02d}/{year:04d}",
+            ]
+        )
+
+    times: List[Tuple[int, int]] = []  # h, m
+    for m in _TIME_RE.finditer(text):
+        if m.group(3):  # am/pm form
+            hour = _hour24(int(m.group(1)), m.group(3))
+            minute = int(m.group(2) or 0)
+        else:
+            hour = int(m.group(4))
+            minute = int(m.group(5))
+        times.append((hour, minute))
+        hm = f"{hour:02d}:{minute:02d}"
+        aliases.extend([hm, f"{hm}:00", f"t{hm}", f"T{hm}"])
+
+    # Pair dates with following times in order (shared-calendar style spans).
+    for i, (year, month, day) in enumerate(dates):
+        iso_date = f"{year:04d}-{month:02d}-{day:02d}"
+        if i < len(times):
+            hour, minute = times[i]
+            hm = f"{hour:02d}:{minute:02d}"
+            aliases.extend(
+                [
+                    f"{iso_date}T{hm}",
+                    f"{iso_date}t{hm}",
+                    f"{iso_date} {hm}",
+                    f"{iso_date}T{hm}:00",
+                ]
+            )
+        # Also attach remaining times to the last date (end of a range).
+    if dates and len(times) > len(dates):
+        year, month, day = dates[-1]
+        iso_date = f"{year:04d}-{month:02d}-{day:02d}"
+        for hour, minute in times[len(dates) :]:
+            hm = f"{hour:02d}:{minute:02d}"
+            aliases.extend(
+                [
+                    f"{iso_date}T{hm}",
+                    f"{iso_date}t{hm}",
+                    f"{iso_date} {hm}",
+                    f"{iso_date}T{hm}:00",
+                ]
+            )
+
+    # Deduplicate while preserving order.
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for a in aliases:
+        if a not in seen:
+            seen.add(a)
+            ordered.append(a)
+    return " ".join(ordered)
 
 
 @dataclass
@@ -53,11 +189,17 @@ class TaintStore:
     user_ngrams: Set[str] = field(default_factory=set)
     sources: List[TaintedSource] = field(default_factory=list)
     n: int = 3
+    default_year: int = 2022
 
     def set_user_task(self, text: str) -> None:
         self.user_request = text or ""
-        self.user_tokens = set(tokenize(self.user_request))
-        self.user_ngrams = char_ngrams(self.user_request, self.n)
+        # Expand NL dates/times so ISO args matching user intent are trusted.
+        aliases = normalize_temporal_aliases(
+            self.user_request, default_year=self.default_year
+        )
+        expanded = f"{self.user_request} {aliases}".strip()
+        self.user_tokens = set(tokenize(expanded))
+        self.user_ngrams = char_ngrams(expanded, self.n)
 
     def add_tool_output(self, source: str, content: str) -> TaintedSource:
         tokens = set(tokenize(content))

@@ -91,16 +91,19 @@ _VERDICT_LINE = re.compile(
 )
 
 
-def parse_task_shield_verdict(text: str) -> Decision:
+def parse_task_shield_verdict(text: str) -> Optional[Decision]:
     """
     Parse ALLOW/BLOCK from model output.
 
     Uses the first leading verdict token. Does **not** scan the whole blob for
     the word BLOCK (small models say \"do not BLOCK\" / \"BLOCK would be wrong\").
+
+    Returns ``None`` on parse failure (empty / no verdict) so callers can
+    fail closed and set ``decision_error``.
     """
     raw = (text or "").strip()
     if not raw:
-        return Decision.ALLOW
+        return None
 
     for line in raw.splitlines():
         line = line.strip()
@@ -121,11 +124,12 @@ def parse_task_shield_verdict(text: str) -> Decision:
     if m2:
         return Decision.BLOCK if m2.group(1).upper() == "BLOCK" else Decision.ALLOW
 
-    return Decision.ALLOW
+    return None
 
 
 def _parse_allow_block(text: str) -> Decision:
-    return parse_task_shield_verdict(text)
+    """Back-compat: parse failure → ALLOW (prefer :func:`parse_task_shield_verdict`)."""
+    return parse_task_shield_verdict(text) or Decision.ALLOW
 
 
 def build_task_shield_prompt(
@@ -259,16 +263,36 @@ class TaskShieldGuard(BaseGuard):
             result = self._chat(prompt)
             self.llm_calls += 1
             content = extract_chat_text(result)
-            decision = parse_task_shield_verdict(content)
-            risk = 0.9 if decision == Decision.BLOCK else 0.05
-            reasons = [f"task_shield:{decision.value}"]
-            meta: Dict[str, Any] = {
-                "available": True,
-                "raw": (content or "")[:300],
-                "llm_calls": 1,
-                "model_hint": self.model_hint,
-                "temperature": self.temperature,
-            }
+            parsed = parse_task_shield_verdict(content)
+            if parsed is None:
+                # Parse failure → fail closed (never silent ALLOW).
+                self.error_count += 1
+                self.last_error = "parse_failure: no ALLOW/BLOCK verdict"
+                decision = Decision.BLOCK
+                risk = 1.0
+                reasons = ["task_shield:error", "task_shield:parse_error"]
+                meta = {
+                    "available": True,
+                    "error": self.last_error,
+                    "raw": (content or "")[:300],
+                    "llm_calls": 1,
+                    "model_hint": self.model_hint,
+                    "temperature": self.temperature,
+                    "fail_closed": True,
+                    "decision_error": True,
+                }
+            else:
+                decision = parsed
+                risk = 0.9 if decision == Decision.BLOCK else 0.05
+                reasons = [f"task_shield:{decision.value}"]
+                meta = {
+                    "available": True,
+                    "raw": (content or "")[:300],
+                    "llm_calls": 1,
+                    "model_hint": self.model_hint,
+                    "temperature": self.temperature,
+                    "decision_error": False,
+                }
         except Exception as exc:
             # Fail closed + loud: never silent ALLOW on provider/config errors.
             self.error_count += 1
@@ -282,6 +306,7 @@ class TaskShieldGuard(BaseGuard):
                 "error": self.last_error,
                 "llm_calls": 1,
                 "fail_closed": True,
+                "decision_error": True,
             }
 
         return allow_decision(

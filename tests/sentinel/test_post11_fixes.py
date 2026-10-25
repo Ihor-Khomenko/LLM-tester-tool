@@ -99,6 +99,7 @@ def test_task_shield_errors_fail_closed_and_counted():
     assert d.decision == Decision.BLOCK
     assert "task_shield:error" in d.reasons
     assert d.meta.get("fail_closed") is True
+    assert d.meta.get("decision_error") is True
     assert g.error_count == 1
 
     traces = [
@@ -111,7 +112,9 @@ def test_task_shield_errors_fail_closed_and_counted():
         )
     ]
     metrics = evaluate_traces(traces, g)
+    assert metrics.n_errors >= 1
     assert metrics.errors >= 1
+    assert metrics.to_dict()["excluding_errors"]["n"] == 0
 
 
 def test_asr_invariants_fn_over_n_attack():
