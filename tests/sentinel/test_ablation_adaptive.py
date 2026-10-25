@@ -6,8 +6,10 @@ import json
 from pathlib import Path
 
 from llm_tester.agent.ablation import (
+    PRIMARY_CELL_NAME,
     format_ablation_table,
     iter_ablation_configs,
+    pick_primary_cell,
     run_ablation_matrix,
 )
 from llm_tester.agent.adaptive.generate import (
@@ -102,6 +104,23 @@ def test_adaptive_traces_load_and_eval():
     assert metrics.n_attack >= 1
 
 
+def test_pick_primary_cell_is_full_not_s1():
+    result = run_ablation_matrix(
+        load_synthetic_traces(),
+        aggregations=["noisy_or", "max"],
+        include_checkpoint_ablation=False,
+    )
+    primary = pick_primary_cell(result)
+    assert primary is not None
+    assert primary["name"] == PRIMARY_CELL_NAME
+    assert primary["stages"] == "full"
+    assert result["cells"][0]["stages"] == "S1"  # matrix still starts at S1
+    assert primary["name"] != result["cells"][0]["name"]
+    table = format_ablation_table(result)
+    assert "metrics.json primary cell" in table
+    assert PRIMARY_CELL_NAME in table
+
+
 def test_ablation_cli(tmp_path: Path):
     run_dir = tmp_path / "abl"
     rc = main(
@@ -123,3 +142,9 @@ def test_ablation_cli(tmp_path: Path):
     assert (run_dir / "ablation_summary.csv").is_file()
     matrix = json.loads((run_dir / "ablation_matrix.json").read_text(encoding="utf-8"))
     assert matrix["n_cells"] >= 4
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["ablation_cell"] == PRIMARY_CELL_NAME
+    assert metrics["metrics_scope"] == "primary_full_system"
+    assert metrics["matrix_path"] == "ablation_matrix.json"
+    # Must not silently publish the S1-only cell as the run summary.
+    assert not str(metrics.get("ablation_cell", "")).startswith("S1|")

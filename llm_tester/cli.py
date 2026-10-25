@@ -1047,7 +1047,11 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_ablation(args: argparse.Namespace) -> int:
-    from llm_tester.agent.ablation import format_ablation_table, run_ablation_matrix
+    from llm_tester.agent.ablation import (
+        format_ablation_table,
+        pick_primary_cell,
+        run_ablation_matrix,
+    )
     from llm_tester.agent.traces import TraceSchemaError, resolve_traces
     from llm_tester.sentinel.policy import load_policy
 
@@ -1105,13 +1109,20 @@ def cmd_ablation(args: argparse.Namespace) -> int:
         "ablation",
         name_parts=["ablation", args.dataset],
     )
-    # Primary metrics.json = first cell (S1|noisy_or|T0+T1) for index/compare;
-    # full matrix in ablation_matrix.json.
-    primary = result["cells"][0]["metrics"] if result["cells"] else {}
-    primary = dict(primary)
+    # metrics.json = full-system default cell (full|noisy_or|T0+T1), NOT S1-only.
+    # Complete matrix → ablation_matrix.json / ablation_summary.csv.
+    primary_cell = pick_primary_cell(result)
+    primary = dict(primary_cell["metrics"]) if primary_cell else {}
     primary["command"] = "ablation"
     primary["dataset"] = args.dataset
     primary["n_cells"] = result["n_cells"]
+    primary["ablation_cell"] = primary_cell["name"] if primary_cell else None
+    primary["metrics_scope"] = "primary_full_system"
+    primary["matrix_path"] = "ablation_matrix.json"
+    primary["note"] = (
+        "metrics.json is the full|noisy_or|T0+T1 cell for index/compare; "
+        "see ablation_matrix.json and ablation_summary.csv for every cell."
+    )
     matrix_path = run_dir / "ablation_matrix.json"
     matrix_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
@@ -1124,6 +1135,8 @@ def cmd_ablation(args: argparse.Namespace) -> int:
         "checkpoint_ablation": not args.no_checkpoint_ablation,
         "n_cells": result["n_cells"],
         "cell_names": [c["name"] for c in result["cells"]],
+        "primary_cell": primary_cell["name"] if primary_cell else None,
+        "metrics_scope": "primary_full_system",
     }
     finalize_run_dir(
         run_dir,
