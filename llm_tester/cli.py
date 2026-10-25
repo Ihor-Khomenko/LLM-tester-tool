@@ -1,6 +1,6 @@
 """Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
-``baselines-eval``, ``ablation``, ``agentdojo``, ``guard-calibrate``,
-``agent-bench``, ``index``, ``compare``, ``figures``.
+``baselines-eval``, ``agentdojo``, ``guard-calibrate``, ``agent-bench``,
+``index``, ``compare``, ``figures``.
 """
 
 from __future__ import annotations
@@ -332,6 +332,53 @@ def build_parser() -> argparse.ArgumentParser:
     be.add_argument("--seed", type=int, default=DEFAULT_SEED)
     be.add_argument("--no-seed", action="store_true")
     add_run_dir_args(be, default_name_help="baselines-eval_<baseline>_<dataset>")
+
+    adj = sub.add_parser(
+        "agentdojo",
+        help=(
+            "AgentDojo-style suite with MCP-Sentinel/baselines as defenses. "
+            "Default --suite mock is offline; --real needs upstream AgentDojo + Ollama"
+        ),
+    )
+    adj.add_argument(
+        "--suite",
+        default="mock",
+        help="mock (CI default) | upstream suite name with --real (e.g. workspace)",
+    )
+    adj.add_argument(
+        "--defense",
+        default="sentinel",
+        choices=[
+            "none",
+            "sentinel",
+            "spotlighting",
+            "prompt_guard2",
+            "progent",
+            "task_shield",
+        ],
+        help="Defense plugged into the suite",
+    )
+    adj.add_argument(
+        "--real",
+        action="store_true",
+        help="Load upstream AgentDojo suite (requires package; not for CI)",
+    )
+    adj.add_argument("--limit", type=int, default=None)
+    adj.add_argument("--policy", type=Path, default=None)
+    adj.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="LLM for task_shield / live agent path (ollama recommended)",
+    )
+    adj.add_argument("--model", default=None, help="e.g. qwen2.5:3b")
+    adj.add_argument("--base-url", default=None)
+    adj.add_argument("--json", action="store_true")
+    adj.add_argument("--max-retries", type=int, default=5)
+    adj.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
+    adj.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    adj.add_argument("--no-seed", action="store_true")
+    add_run_dir_args(adj, default_name_help="agentdojo_<suite>_<defense>")
 
     ab = sub.add_parser(
         "agent-bench",
@@ -758,6 +805,95 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         print(
             "\nNote: numbers are measured on this run's traces (preliminary). "
             "Not claimed as published results."
+        )
+    return 0
+
+
+def cmd_agentdojo(args: argparse.Namespace) -> int:
+    from llm_tester.agent.agentdojo_adapter import (
+        format_agentdojo_summary,
+        load_real_agentdojo_tasks,
+        mock_agentdojo_suite,
+        run_agentdojo_suite,
+    )
+    from llm_tester.agent.provider_adapter import build_llm_chat
+
+    if args.real:
+        try:
+            tasks = load_real_agentdojo_tasks(args.suite, limit=args.limit)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+    else:
+        if args.suite not in ("mock", "default", "ci"):
+            print(
+                f"Unknown offline suite {args.suite!r}. Use --suite mock, or "
+                f"--real with an upstream suite name.",
+                file=sys.stderr,
+            )
+            return 2
+        tasks = mock_agentdojo_suite(limit=args.limit)
+
+    llm = None
+    if args.provider:
+        llm = build_llm_chat(
+            args.provider,
+            args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            max_retries=args.max_retries,
+        )
+
+    summary, results = run_agentdojo_suite(
+        tasks,
+        defense_name=args.defense,
+        llm_provider=llm,
+        policy_path=args.policy,
+    )
+
+    run_dir = prepare_run_dir(
+        args,
+        "agentdojo",
+        name_parts=["agentdojo", args.suite, args.defense],
+    )
+    with open_results_writer(run_dir, append=False) as writer:
+        for rec in results:
+            writer.write(rec.to_dict())
+
+    metrics_dict = summary.to_metrics()
+    metrics_dict["command"] = "agentdojo"
+    metrics_dict["suite"] = args.suite
+    metrics_dict["defense"] = args.defense
+    metrics_dict["real"] = bool(args.real)
+    config = {
+        "command": "agentdojo",
+        "suite": args.suite,
+        "defense": args.defense,
+        "real": bool(args.real),
+        "limit": args.limit,
+        "provider": args.provider,
+        "model": args.model,
+    }
+    finalize_run_dir(
+        run_dir,
+        command="agentdojo",
+        config=config,
+        metrics=metrics_dict,
+        argv=sys.argv[1:],
+        provider=args.provider,
+        model=args.model,
+        extra_sha=parse_extra_sha(args.extra_sha),
+    )
+    print(f"Run artefacts written to {run_dir}")
+    if args.json:
+        print(json.dumps(metrics_dict, indent=2))
+    else:
+        print(
+            format_agentdojo_summary(
+                summary,
+                title=f"agentdojo suite={args.suite} defense={args.defense}",
+            )
         )
     return 0
 
@@ -1375,6 +1511,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_guard_eval(args)
     if args.command == "baselines-eval":
         return cmd_baselines_eval(args)
+    if args.command == "agentdojo":
+        return cmd_agentdojo(args)
     if args.command == "guard-calibrate":
         return cmd_guard_calibrate(args)
     if args.command == "agent-bench":
