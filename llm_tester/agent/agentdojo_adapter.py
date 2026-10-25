@@ -22,6 +22,8 @@ deterministic scripted LLM that emits ground-truth tool calls — safe for CI.
 
 from __future__ import annotations
 
+import random
+import statistics
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -191,10 +193,26 @@ class AgentDojoCaseResult:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     latency_ms: float = 0.0
+    llm_calls: int = 0
+    defense_overhead_ms: float = 0.0
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def _percentile(values: Sequence[float], p: float) -> Optional[float]:
+    if not values:
+        return None
+    if len(values) == 1:
+        return float(values[0])
+    ordered = sorted(float(v) for v in values)
+    k = (len(ordered) - 1) * (p / 100.0)
+    f = int(k)
+    c = min(f + 1, len(ordered) - 1)
+    if f == c:
+        return float(ordered[f])
+    return float(ordered[f] + (ordered[c] - ordered[f]) * (k - f))
 
 
 @dataclass
@@ -206,6 +224,12 @@ class AgentDojoSummary:
     utility_under_attack_successes: int = 0
     attack_successes: int = 0
     blocked: int = 0
+    llm_calls_total: int = 0
+    latencies_ms: List[float] = field(default_factory=list)
+    defense_overheads_ms: List[float] = field(default_factory=list)
+    sample_seed: Optional[int] = None
+    n_benign_available: int = 0
+    n_attack_available: int = 0
 
     @property
     def utility(self) -> Optional[float]:
@@ -223,6 +247,18 @@ class AgentDojoSummary:
     def asr(self) -> Optional[float]:
         return (self.attack_successes / self.n_attack) if self.n_attack else None
 
+    @property
+    def llm_calls_per_task(self) -> Optional[float]:
+        return (self.llm_calls_total / self.n) if self.n else None
+
+    @property
+    def defense_overhead_mean_ms(self) -> Optional[float]:
+        return (
+            statistics.mean(self.defense_overheads_ms)
+            if self.defense_overheads_ms
+            else None
+        )
+
     def to_metrics(self) -> Dict[str, Any]:
         return {
             "n": self.n,
@@ -236,6 +272,19 @@ class AgentDojoSummary:
             "utility_successes": self.utility_successes,
             "utility_under_attack_successes": self.utility_under_attack_successes,
             "attack_successes": self.attack_successes,
+            "llm_calls_total": self.llm_calls_total,
+            "llm_calls_per_task": self.llm_calls_per_task,
+            "defense_overhead_mean_ms": self.defense_overhead_mean_ms,
+            "defense_overhead_p50_ms": _percentile(self.defense_overheads_ms, 50),
+            "defense_overhead_p95_ms": _percentile(self.defense_overheads_ms, 95),
+            "latency_mean_ms": (
+                statistics.mean(self.latencies_ms) if self.latencies_ms else None
+            ),
+            "latency_p50_ms": _percentile(self.latencies_ms, 50),
+            "latency_p95_ms": _percentile(self.latencies_ms, 95),
+            "sample_seed": self.sample_seed,
+            "n_benign_available": self.n_benign_available,
+            "n_attack_available": self.n_attack_available,
             "tpr": None,
             "fpr": None,
             "f1": None,
@@ -351,76 +400,95 @@ def load_agentdojo_suite(
         ) from exc
 
 
+def _job(
+    *,
+    kind: str,
+    user_task_id: str,
+    injection_task_id: Optional[str],
+    label: str,
+) -> Dict[str, Any]:
+    return {
+        "kind": kind,
+        "user_task_id": user_task_id,
+        "injection_task_id": injection_task_id,
+        "label": label,
+    }
+
+
 def sample_real_suite_jobs(
     suite: Any,
     *,
     limit: Optional[int] = None,
+    seed: Optional[int] = None,
+    include_attacks: bool = True,
 ) -> List[Dict[str, Any]]:
     """
-    Build a balanced job list of benign user-tasks and injection pairs.
+    Stratified, seeded sample from the full AgentDojo job space.
 
-    Each job is ``{kind, user_task_id, injection_task_id|None, label}``.
-    ``--limit`` always draws from both pools when both are non-empty.
+    Universe
+    --------
+    * Benign: one job per user task ``(uid, None)`` — size ``|U|``.
+    * Attack: full cartesian product ``(uid, iid)`` — size ``|U| × |I|``
+      (when ``include_attacks``).
+
+    ``--limit N`` draws up to ``ceil(N/2)`` from each stratum (then fills
+    remainder), using ``random.Random(seed)`` without replacement.
+    ``include_attacks=False`` (``--attack none``) skips the attack stratum.
     """
-    user_ids = list(getattr(suite, "user_tasks", {}) or {})
-    inj_ids = list(getattr(suite, "injection_tasks", {}) or {})
-    if not user_ids and not inj_ids:
+    user_ids = sorted(str(k) for k in (getattr(suite, "user_tasks", {}) or {}))
+    inj_ids = sorted(str(k) for k in (getattr(suite, "injection_tasks", {}) or {}))
+    if not user_ids:
         return []
 
-    if limit is None:
-        jobs: List[Dict[str, Any]] = [
-            {
-                "kind": "benign",
-                "user_task_id": uid,
-                "injection_task_id": None,
-                "label": "benign",
-            }
-            for uid in user_ids
-        ]
-        # One attack pair per injection task (paired with a rotating user task).
-        for i, iid in enumerate(inj_ids):
-            uid = user_ids[i % len(user_ids)] if user_ids else None
-            if uid is None:
-                continue
-            jobs.append(
-                {
-                    "kind": "attack",
-                    "user_task_id": uid,
-                    "injection_task_id": iid,
-                    "label": "attack",
-                }
-            )
-        return jobs
+    benign_pool = [
+        _job(
+            kind="benign",
+            user_task_id=uid,
+            injection_task_id=None,
+            label="benign",
+        )
+        for uid in user_ids
+    ]
+    attack_pool: List[Dict[str, Any]] = []
+    if include_attacks and inj_ids:
+        for uid in user_ids:
+            for iid in inj_ids:
+                attack_pool.append(
+                    _job(
+                        kind="attack",
+                        user_task_id=uid,
+                        injection_task_id=iid,
+                        label="attack",
+                    )
+                )
 
-    n_benign = min(len(user_ids), max(1, (limit + 1) // 2) if inj_ids else limit)
-    n_attack = min(len(inj_ids), max(0, limit - n_benign))
+    if limit is None:
+        return benign_pool + attack_pool
+
+    if limit <= 0:
+        return []
+
+    rng = random.Random(seed if seed is not None else 0)
+
+    if not include_attacks or not attack_pool:
+        n_b = min(len(benign_pool), limit)
+        return rng.sample(benign_pool, n_b) if n_b else []
+
+    # Stratified: aim for ~half / half, then fill from whichever pool remains.
+    n_benign = min(len(benign_pool), max(1, (limit + 1) // 2))
+    n_attack = min(len(attack_pool), max(0, limit - n_benign))
     if n_benign + n_attack < limit:
         remain = limit - n_benign - n_attack
-        extra_b = min(len(user_ids) - n_benign, remain)
+        extra_b = min(len(benign_pool) - n_benign, remain)
         n_benign += extra_b
         remain -= extra_b
-        n_attack += min(len(inj_ids) - n_attack, remain)
+        n_attack += min(len(attack_pool) - n_attack, remain)
 
-    jobs = [
-        {
-            "kind": "benign",
-            "user_task_id": uid,
-            "injection_task_id": None,
-            "label": "benign",
-        }
-        for uid in user_ids[:n_benign]
-    ]
-    for i, iid in enumerate(inj_ids[:n_attack]):
-        uid = user_ids[i % len(user_ids)] if user_ids else user_ids[0]
-        jobs.append(
-            {
-                "kind": "attack",
-                "user_task_id": uid,
-                "injection_task_id": iid,
-                "label": "attack",
-            }
-        )
-    return jobs
+    picked_b = rng.sample(benign_pool, n_benign) if n_benign else []
+    # Independent stratum stream for attacks.
+    rng_a = random.Random((seed if seed is not None else 0) + 1)
+    picked_a = rng_a.sample(attack_pool, n_attack) if n_attack else []
+    return picked_b + picked_a
 
 
 # Back-compat: flatten real suite into scripted AgentDojoTask (tests / legacy).
@@ -829,6 +897,54 @@ def _register_suite_tools(defense: Any, suite: Any) -> None:
         defense.check_tool_registration(tools)
 
 
+def _llm_calls_from_guard_dict(d: Dict[str, Any]) -> int:
+    meta = d.get("meta") or {}
+    meta_calls = int(meta.get("llm_calls") or 0)
+    stage_calls = 0
+    for s in d.get("stage_scores") or []:
+        details = s.get("details") if isinstance(s, dict) else getattr(s, "details", {})
+        stage_calls += int((details or {}).get("llm_calls") or 0)
+    return max(meta_calls, stage_calls)
+
+
+def _defense_stats_from_steps(
+    steps: Sequence[Dict[str, Any]], defense: Any = None
+) -> Tuple[int, float]:
+    """Return (llm_calls, defense_overhead_ms) from guarded executor steps."""
+    llm_calls = 0
+    overhead = 0.0
+    for step in steps:
+        for key in ("guard", "t1"):
+            d = step.get(key)
+            if not isinstance(d, dict):
+                continue
+            overhead += float(d.get("latency_ms") or 0.0)
+            llm_calls += _llm_calls_from_guard_dict(d)
+    # Prefer cumulative provider counter when higher (Task-Shield).
+    if defense is not None:
+        llm_calls = max(llm_calls, int(getattr(defense, "llm_calls", 0) or 0))
+    return llm_calls, overhead
+
+
+def _note_case(summary: AgentDojoSummary, rec: AgentDojoCaseResult) -> None:
+    summary.n += 1
+    summary.llm_calls_total += int(rec.llm_calls or 0)
+    summary.latencies_ms.append(float(rec.latency_ms or 0.0))
+    summary.defense_overheads_ms.append(float(rec.defense_overhead_ms or 0.0))
+    if rec.blocked:
+        summary.blocked += 1
+    if rec.label == "benign":
+        summary.n_benign += 1
+        if rec.utility_success:
+            summary.utility_successes += 1
+    else:
+        summary.n_attack += 1
+        if rec.attack_success:
+            summary.attack_successes += 1
+        if rec.utility_success:
+            summary.utility_under_attack_successes += 1
+
+
 def run_real_agentdojo_suite(
     suite_name: str,
     *,
@@ -839,6 +955,7 @@ def run_real_agentdojo_suite(
     temperature: float = 0.0,
     policy_path: Optional[Path] = None,
     limit: Optional[int] = None,
+    seed: Optional[int] = None,
     benchmark_version: str = DEFAULT_BENCHMARK_VERSION,
     attack_name: str = DEFAULT_ATTACK,
 ) -> Tuple[AgentDojoSummary, List[AgentDojoCaseResult]]:
@@ -859,8 +976,9 @@ def run_real_agentdojo_suite(
         llm=llm, defense=defense, defense_name=defense_name or "none"
     )
 
+    include_attacks = bool(attack_name) and attack_name not in ("none", "off")
     attack = None
-    if attack_name and attack_name not in ("none", "off"):
+    if include_attacks:
         try:
             from agentdojo.attacks.attack_registry import load_attack  # type: ignore
 
@@ -870,8 +988,22 @@ def run_real_agentdojo_suite(
                 f"Failed to load AgentDojo attack {attack_name!r}: {exc}"
             ) from exc
 
-    jobs = sample_real_suite_jobs(suite, limit=limit)
-    summary = AgentDojoSummary()
+    user_ids = list(getattr(suite, "user_tasks", {}) or {})
+    inj_ids = list(getattr(suite, "injection_tasks", {}) or {})
+    n_benign_avail = len(user_ids)
+    n_attack_avail = (len(user_ids) * len(inj_ids)) if include_attacks else 0
+
+    jobs = sample_real_suite_jobs(
+        suite,
+        limit=limit,
+        seed=seed,
+        include_attacks=include_attacks,
+    )
+    summary = AgentDojoSummary(
+        sample_seed=seed,
+        n_benign_available=n_benign_avail,
+        n_attack_available=n_attack_avail,
+    )
     results: List[AgentDojoCaseResult] = []
 
     for job in jobs:
@@ -925,8 +1057,7 @@ def run_real_agentdojo_suite(
                 rec.error = f"attack_build:{exc}"
                 rec.latency_ms = (time.perf_counter() - start) * 1000
                 results.append(rec)
-                summary.n += 1
-                summary.n_attack += 1
+                _note_case(summary, rec)
                 continue
 
         try:
@@ -946,22 +1077,12 @@ def run_real_agentdojo_suite(
             rec.attack_success = bool(security)
         rec.blocked = bool(getattr(guarded, "blocked", False))
         rec.steps = list(getattr(guarded, "steps", []) or [])
+        rec.llm_calls, rec.defense_overhead_ms = _defense_stats_from_steps(
+            rec.steps, defense
+        )
         rec.latency_ms = (time.perf_counter() - start) * 1000
         results.append(rec)
-
-        summary.n += 1
-        if rec.blocked:
-            summary.blocked += 1
-        if label == "benign":
-            summary.n_benign += 1
-            if rec.utility_success:
-                summary.utility_successes += 1
-        else:
-            summary.n_attack += 1
-            if rec.attack_success:
-                summary.attack_successes += 1
-            if rec.utility_success:
-                summary.utility_under_attack_successes += 1
+        _note_case(summary, rec)
 
     return summary, results
 
@@ -1046,6 +1167,9 @@ def run_agentdojo_task(
         rec.attack_success = False
         rec.utility_success = bool(util_hit) and not rec.blocked
 
+    rec.llm_calls, rec.defense_overhead_ms = _defense_stats_from_steps(
+        rec.steps, defense
+    )
     rec.latency_ms = (time.perf_counter() - start) * 1000
     return rec
 
@@ -1067,19 +1191,7 @@ def run_agentdojo_suite(
             task, defense=defense, defense_name=defense_name or "none"
         )
         results.append(rec)
-        summary.n += 1
-        if rec.blocked:
-            summary.blocked += 1
-        if task.label == "benign":
-            summary.n_benign += 1
-            if rec.utility_success:
-                summary.utility_successes += 1
-        else:
-            summary.n_attack += 1
-            if rec.attack_success:
-                summary.attack_successes += 1
-            if rec.utility_success:
-                summary.utility_under_attack_successes += 1
+        _note_case(summary, rec)
     return summary, results
 
 
@@ -1089,6 +1201,9 @@ def format_agentdojo_summary(
     def pct(x: Optional[float]) -> str:
         return "n/a" if x is None else f"{100.0 * x:.1f}%"
 
+    def ms(x: Optional[float]) -> str:
+        return "n/a" if x is None else f"{x:.2f} ms"
+
     return "\n".join(
         [
             f"=== {title} ===",
@@ -1097,5 +1212,9 @@ def format_agentdojo_summary(
             f"utility_under_attack={pct(summary.utility_under_attack)}",
             f"ASR={pct(summary.asr)}",
             f"blocked={summary.blocked}",
+            f"llm_calls_total={summary.llm_calls_total}  "
+            f"per_task="
+            f"{summary.llm_calls_per_task if summary.llm_calls_per_task is not None else 'n/a'}",
+            f"defense_overhead_mean={ms(summary.defense_overhead_mean_ms)}",
         ]
     )

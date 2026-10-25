@@ -51,3 +51,58 @@ def test_provider_chat_mocked():
     assert kwargs["temperature"] == 0.0
     assert kwargs["seed"] == 42
     assert kwargs["messages"][0]["role"] == "user"
+    # Ollama: native options.seed / options.temperature / options.num_thread.
+    opts = kwargs["extra_body"]["options"]
+    assert opts["seed"] == 42
+    assert opts["temperature"] == 0.0
+    assert opts["num_thread"] == 1
+    assert result.request_options == opts
+
+
+def test_ollama_chat_kwargs_override_and_num_thread():
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "ALLOW"
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.model_dump.return_value = {}
+    mock_client.chat.completions.create.return_value = mock_resp
+
+    with patch("llm_tester.providers.OpenAI", return_value=mock_client):
+        provider = LLMProvider(
+            "ollama",
+            "qwen2.5:3b",
+            params=RunParams(temperature=0.7, seed=1, num_thread=4),
+        )
+        provider.chat("hi", temperature=0.0, seed=99)
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["temperature"] == 0.0
+    assert kwargs["seed"] == 99
+    assert kwargs["extra_body"]["options"]["temperature"] == 0.0
+    assert kwargs["extra_body"]["options"]["seed"] == 99
+    assert kwargs["extra_body"]["options"]["num_thread"] == 4
+
+
+def test_openai_chat_no_extra_body_options(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "ok"
+    mock_resp = MagicMock()
+    mock_resp.choices = [mock_choice]
+    mock_resp.model_dump.return_value = {}
+    mock_client.chat.completions.create.return_value = mock_resp
+
+    with patch("llm_tester.providers.OpenAI", return_value=mock_client):
+        provider = LLMProvider(
+            "openai",
+            "gpt-4o-mini",
+            params=RunParams(temperature=0.0, seed=7),
+        )
+        provider.chat("hi")
+
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["temperature"] == 0.0
+    assert kwargs["seed"] == 7
+    assert "extra_body" not in kwargs

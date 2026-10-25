@@ -1,6 +1,6 @@
 """Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
 ``baselines-eval``, ``agentdojo``, ``ablation``, ``guard-calibrate``,
-``agent-bench``, ``index``, ``compare``, ``figures``.
+``grey-zone-rebuild``, ``agent-bench``, ``index``, ``compare``, ``figures``.
 """
 
 from __future__ import annotations
@@ -267,6 +267,24 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     ge.add_argument("--seed", type=int, default=DEFAULT_SEED)
     ge.add_argument("--no-seed", action="store_true")
+    ge.add_argument(
+        "--num-thread",
+        type=int,
+        default=None,
+        help="Ollama options.num_thread (default 1 when --seed is set)",
+    )
+    ge.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Repeat evaluate_traces K times; report mean/std of key metrics",
+    )
+    ge.add_argument(
+        "--repeat-seed-stride",
+        type=int,
+        default=0,
+        help="With --repeats K>1, use seed, seed+stride, … per repeat (0=same seed)",
+    )
     add_run_dir_args(ge, default_name_help="guard-eval_<dataset>")
 
     be = sub.add_parser(
@@ -599,6 +617,46 @@ def build_parser() -> argparse.ArgumentParser:
     gc.add_argument("--json", action="store_true", help="Print full result JSON only on stdout")
     add_run_dir_args(gc, default_name_help="guard-calibrate_<dataset>")
 
+    gzr = sub.add_parser(
+        "grey-zone-rebuild",
+        help=(
+            "Rebuild an S4 grey-zone JSONL subset from a prior guard-eval "
+            "run's results (escalated / S4 stage filter)"
+        ),
+    )
+    gzr.add_argument(
+        "--from-run",
+        type=Path,
+        required=True,
+        help="Prior guard-eval run directory (with results.jsonl.gz)",
+    )
+    gzr.add_argument(
+        "--dataset",
+        default="synthetic",
+        choices=["synthetic", "injecagent", "jsonl"],
+        help="Same dataset used for the source run",
+    )
+    gzr.add_argument("--dataset-path", type=Path, default=None)
+    gzr.add_argument(
+        "--download-injecagent",
+        action="store_true",
+        help="Download InjecAgent JSON if needed",
+    )
+    gzr.add_argument("--limit", type=int, default=None)
+    gzr.add_argument(
+        "--filter",
+        default="escalated",
+        choices=["escalated", "s4-stage", "both"],
+        help="Which result rows count as grey-zone (default: escalated)",
+    )
+    gzr.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output mcp-sentinel-trace JSONL path",
+    )
+    gzr.add_argument("--json", action="store_true", help="Print manifest JSON")
+
     sp = sub.add_parser(
         "sentinel-proxy",
         help="Run MCP stdio JSON-RPC proxy wrapping a backend MCP server",
@@ -698,6 +756,7 @@ def build_parser() -> argparse.ArgumentParser:
 def cmd_guard_eval(args: argparse.Namespace) -> int:
     from llm_tester.agent.eval import evaluate_traces, format_metrics
     from llm_tester.agent.provider_adapter import build_llm_chat
+    from llm_tester.agent.repeats import aggregate_repeat_metrics, format_repeat_aggregate
     from llm_tester.agent.traces import TraceSchemaError, resolve_traces
     from llm_tester.sentinel.guard import build_sentinel
     from llm_tester.sentinel.policy import load_policy
@@ -734,7 +793,6 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
     if args.s3_backend:
         policy.s3_backend = args.s3_backend
 
-    llm = None
     want_llm = (
         args.only_s4
         or args.enable_s4
@@ -748,16 +806,7 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         if not args.enable_s4:
             policy.enable_s4 = False
 
-    if want_llm and args.provider:
-        llm = build_llm_chat(
-            args.provider,
-            args.model,
-            base_url=args.base_url,
-            temperature=args.temperature,
-            seed=None if args.no_seed else args.seed,
-            max_retries=args.max_retries,
-        )
-    elif want_llm and not args.provider:
+    if want_llm and not args.provider:
         print(
             "Warning: S3/S4 LLM backend requested but --provider not set; "
             "falling back to lite S3 / no S4.",
@@ -766,6 +815,7 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         if policy.s3_backend == "llm":
             policy.s3_backend = "lite"
         policy.enable_s4 = False
+        want_llm = False
 
     abl = []
     if args.no_s1:
@@ -778,31 +828,75 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         abl.append("only-S4")
     abl_slug = "".join(abl) if abl else "full"
 
+    repeats = max(1, int(getattr(args, "repeats", 1) or 1))
+    base_seed = None if args.no_seed else args.seed
+    stride = int(getattr(args, "repeat_seed_stride", 0) or 0)
+
     run_dir = prepare_run_dir(
         args,
         "guard-eval",
         name_parts=["guard-eval", args.dataset, abl_slug],
     )
-    # Prefer run-dir log when --log not set.
-    log_path = args.log
-    if log_path is None:
-        log_path = run_dir / "sentinel_decisions.jsonl.gz"
 
-    guard = build_sentinel(policy=policy, llm_provider=llm, log_path=log_path)
-    try:
-        metrics, records = evaluate_traces(traces, guard, collect_records=True)
-    finally:
-        # Finalize gzip decision log (CRC trailer) when using .jsonl.gz.
-        if getattr(guard, "logger", None) is not None:
-            guard.logger.close()
+    per_repeat_metrics: List[Dict[str, Any]] = []
+    last_metrics = None
+    last_records: List[Dict[str, Any]] = []
 
+    for i in range(repeats):
+        seed_i = base_seed
+        if base_seed is not None and stride:
+            seed_i = int(base_seed) + i * stride
+        llm = None
+        if want_llm and args.provider:
+            llm = build_llm_chat(
+                args.provider,
+                args.model,
+                base_url=args.base_url,
+                temperature=args.temperature,
+                seed=seed_i,
+                max_retries=args.max_retries,
+                num_thread=getattr(args, "num_thread", None),
+            )
+        log_path = args.log
+        if log_path is None:
+            log_path = (
+                run_dir / f"sentinel_decisions_r{i}.jsonl.gz"
+                if repeats > 1
+                else run_dir / "sentinel_decisions.jsonl.gz"
+            )
+        guard = build_sentinel(policy=policy, llm_provider=llm, log_path=log_path)
+        try:
+            metrics, records = evaluate_traces(traces, guard, collect_records=True)
+        finally:
+            if getattr(guard, "logger", None) is not None:
+                guard.logger.close()
+        mdict = metrics.to_dict()
+        mdict["repeat_index"] = i
+        mdict["seed"] = seed_i
+        per_repeat_metrics.append(mdict)
+        last_metrics = metrics
+        last_records = records
+        if repeats > 1:
+            with open_results_writer(
+                run_dir / f"repeat_{i}", append=False
+            ) as writer:
+                for rec in records:
+                    writer.write(rec)
+
+    assert last_metrics is not None
     with open_results_writer(run_dir, append=False) as writer:
-        for rec in records:
+        for rec in last_records:
             writer.write(rec)
 
-    metrics_dict = metrics.to_dict()
+    metrics_dict = last_metrics.to_dict()
     metrics_dict["dataset"] = args.dataset
     metrics_dict["command"] = "guard-eval"
+    metrics_dict["repeats"] = repeats
+    if repeats > 1:
+        agg = aggregate_repeat_metrics(per_repeat_metrics)
+        metrics_dict["per_repeat"] = per_repeat_metrics
+        metrics_dict["aggregate"] = agg
+
     config: Dict[str, Any] = {
         "command": "guard-eval",
         "dataset": args.dataset,
@@ -820,7 +914,10 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         "model": args.model,
         "base_url": args.base_url,
         "temperature": args.temperature,
-        "seed": None if args.no_seed else args.seed,
+        "seed": base_seed,
+        "num_thread": getattr(args, "num_thread", None),
+        "repeats": repeats,
+        "repeat_seed_stride": stride,
         "thresholds": {
             "tau_low": policy.tau_low,
             "tau_high": policy.tau_high,
@@ -852,11 +949,63 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         title = f"guard-eval dataset={args.dataset}" + (
             f" ablation={','.join(abl)}" if abl else ""
         )
-        print(format_metrics(metrics, title=title))
+        print(format_metrics(last_metrics, title=title))
+        if repeats > 1:
+            print()
+            print(
+                format_repeat_aggregate(
+                    metrics_dict["aggregate"],
+                    repeats=repeats,
+                    title=title + " aggregate",
+                )
+            )
         print(
             "\nNote: numbers are measured on this run's traces (preliminary). "
             "Not claimed as published results."
         )
+    return 0
+
+
+def cmd_grey_zone_rebuild(args: argparse.Namespace) -> int:
+    from llm_tester.agent.grey_zone import rebuild_grey_zone_subset
+    from llm_tester.agent.traces import TraceSchemaError, resolve_traces
+
+    try:
+        traces = resolve_traces(
+            args.dataset,
+            path=args.dataset_path,
+            limit=args.limit,
+            download=args.download_injecagent,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except TraceSchemaError as exc:
+        print(f"Trace schema error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"Failed to load traces: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        manifest = rebuild_grey_zone_subset(
+            args.from_run,
+            traces,
+            out_path=args.out,
+            filter_mode=args.filter,
+        )
+    except Exception as exc:
+        print(f"grey-zone-rebuild failed: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(
+            f"Wrote {manifest['n']} grey-zone traces to {manifest['out_path']} "
+            f"(filter={manifest['filter']}; source={manifest['source_run']})"
+        )
+        print(f"Manifest: {manifest.get('manifest_path')}")
     return 0
 
 
@@ -893,6 +1042,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
             return 1
         # Default --real LLM is the offline scripted mock (no live API).
         effective_provider = provider_name or "mock"
+        sample_seed = None if args.no_seed else args.seed
         try:
             summary, results = run_real_agentdojo_suite(
                 args.suite,
@@ -903,6 +1053,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
                 temperature=args.temperature,
                 policy_path=args.policy,
                 limit=args.limit,
+                seed=sample_seed,
                 benchmark_version=args.benchmark_version,
                 attack_name=args.attack,
             )
@@ -946,6 +1097,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
         "defense": args.defense,
         "real": bool(args.real),
         "limit": args.limit,
+        "sample_seed": None if args.no_seed else args.seed,
         "provider": provider_name or ("mock" if args.real else None),
         "model": args.model,
         "attack": getattr(args, "attack", None) if args.real else None,
@@ -1725,6 +1877,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_ablation(args)
     if args.command == "guard-calibrate":
         return cmd_guard_calibrate(args)
+    if args.command == "grey-zone-rebuild":
+        return cmd_grey_zone_rebuild(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
     if args.command == "sentinel-proxy":

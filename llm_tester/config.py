@@ -56,6 +56,10 @@ DEFAULT_REFUSAL_PHRASES = (
 )
 
 
+# Ollama: pin threads when seeding for reproducibility (override with --num-thread).
+DEFAULT_OLLAMA_NUM_THREAD = 1
+
+
 @dataclass(frozen=True)
 class RunParams:
     """Deterministic generation settings logged with every response."""
@@ -63,6 +67,8 @@ class RunParams:
     temperature: float = DEFAULT_TEMPERATURE
     seed: Optional[int] = DEFAULT_SEED
     max_tokens: Optional[int] = None
+    # Ollama-native option; ignored by other providers.
+    num_thread: Optional[int] = None
 
     def as_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"temperature": self.temperature}
@@ -70,6 +76,8 @@ class RunParams:
             d["seed"] = self.seed
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
+        if self.num_thread is not None:
+            d["num_thread"] = self.num_thread
         return d
 
 

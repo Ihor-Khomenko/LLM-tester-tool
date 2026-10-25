@@ -25,6 +25,7 @@ def build_llm_chat(
     seed: Optional[int] = DEFAULT_SEED,
     max_retries: int = 5,
     max_tokens: Optional[int] = None,
+    num_thread: Optional[int] = None,
 ) -> LLMProvider:
     """
     Construct an OpenAI-compatible chat client usable as sentinel ``llm_provider``.
@@ -32,13 +33,21 @@ def build_llm_chat(
     ``LLMProvider.chat(prompt, system=...)`` already matches the ``LLMChat``
     protocol, so the instance can be passed directly to
     :func:`llm_tester.sentinel.build_sentinel`.
+
+    For Ollama, ``num_thread`` (and seed/temperature) are also sent under
+    ``extra_body.options`` so native sampling knobs are explicit.
     """
     name = provider.lower().strip()
     if name not in PROVIDERS:
         raise ValueError(
             f"Unknown provider '{provider}'. Choose from: {', '.join(sorted(PROVIDERS))}"
         )
-    params = RunParams(temperature=temperature, seed=seed, max_tokens=max_tokens)
+    params = RunParams(
+        temperature=temperature,
+        seed=seed,
+        max_tokens=max_tokens,
+        num_thread=num_thread,
+    )
     return LLMProvider(
         name,
         model,
