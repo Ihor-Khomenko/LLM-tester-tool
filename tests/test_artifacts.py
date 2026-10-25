@@ -26,12 +26,50 @@ def test_scrub_secrets_redacts_api_keys():
         "api_key": "sk-secret-value",
         "nested": {"token": "abc", "model": "gpt"},
         "OPENAI_API_KEY": "sk-x",
+        "authorization": "Bearer secret-token-value",
+        "access_token": "tok_abc",
     }
     clean = scrub_secrets(payload)
     assert clean["api_key"] == "***REDACTED***"
     assert clean["nested"]["token"] == "***REDACTED***"
     assert clean["nested"]["model"] == "gpt"
     assert clean["OPENAI_API_KEY"] == "***REDACTED***"
+    assert clean["authorization"] == "***REDACTED***"
+    assert clean["access_token"] == "***REDACTED***"
+
+
+def test_scrub_secrets_keeps_metric_token_fields():
+    """Field names that merely contain 'token' must not be wiped."""
+    payload = {
+        "tokens": ["hello", "world"],
+        "tainted_tokens": ["evil"],
+        "token_pi": 0.42,
+        "token_sim": 0.8,
+        "token_similarity": 0.9,
+        "max_tokens": 512,
+        "args": {
+            "start_date": {
+                "tokens": ["2022-02-28t14:00"],
+                "tainted_tokens": [],
+                "token_pi": 0.0,
+                "pi": 0.0,
+            }
+        },
+    }
+    clean = scrub_secrets(payload)
+    assert clean["tokens"] == ["hello", "world"]
+    assert clean["tainted_tokens"] == ["evil"]
+    assert clean["token_pi"] == 0.42
+    assert clean["token_sim"] == 0.8
+    assert clean["token_similarity"] == 0.9
+    assert clean["max_tokens"] == 512
+    assert clean["args"]["start_date"]["token_pi"] == 0.0
+    assert clean["args"]["start_date"]["tokens"] == ["2022-02-28t14:00"]
+
+
+def test_scrub_secrets_redacts_key_shaped_values():
+    clean = scrub_secrets({"note": "sk-proj-abcdefghijklmnopqrstuvwxyz"})
+    assert clean["note"] == "***REDACTED***"
 
 
 def test_redact_mapping_keeps_non_secrets():

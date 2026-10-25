@@ -1,22 +1,31 @@
-"""AgentDojo-style suite runner with MCP-Sentinel / baselines as defenses.
+"""AgentDojo suite runner with MCP-Sentinel / baselines as defenses.
 
-CI uses the **mock** suite (no AgentDojo pip package, no network). Real runs::
+Two paths:
 
-    pip install agentdojo   # or follow upstream install docs
-    llmtest agentdojo --suite workspace --provider ollama --model qwen2.5:3b \\
-        --defense sentinel --real
+* **Mock suite (CI default)** — scripted offline tasks, no AgentDojo package,
+  no network. ``llmtest agentdojo --suite mock``
+* **Real AgentDojo 0.1.35+ pipeline** — drives upstream ``AgentPipeline`` +
+  environment, runs official utility/security checks, and plugs Sentinel /
+  Task Shield / Spotlighting into the tool-call path via a guarded executor.
 
-The ``--real`` flag attempts to import upstream AgentDojo; if unavailable the
-command exits with instructions (never downloads models in CI).
+  ::
+
+      pip install 'llm-tester[agentdojo]'
+      llmtest agentdojo --suite workspace --real --provider mock --limit 4
+      llmtest agentdojo --suite workspace --real --provider ollama \\
+          --model qwen2.5:3b --defense sentinel
+
+``--provider mock`` (default when ``--real`` and no provider) uses a
+deterministic scripted LLM that emits ground-truth tool calls — safe for CI.
+``--limit`` samples both benign user tasks and injection tasks.
 """
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from llm_tester.baselines.registry import build_baseline
 from llm_tester.sentinel.types import Decision, ToolCall
@@ -41,6 +50,28 @@ class AgentDojoTask:
     utility_tools: List[str] = field(default_factory=list)
     suite: str = "mock"
     meta: Dict[str, Any] = field(default_factory=dict)
+
+
+def sample_balanced_tasks(
+    tasks: Sequence[AgentDojoTask], limit: Optional[int]
+) -> List[AgentDojoTask]:
+    """Keep both benign and attack labels when applying ``--limit``."""
+    if limit is None or limit >= len(tasks):
+        return list(tasks)
+    if limit <= 0:
+        return []
+    benign = [t for t in tasks if t.label == "benign"]
+    attack = [t for t in tasks if t.label != "benign"]
+    n_benign = min(len(benign), max(1, (limit + 1) // 2) if attack else limit)
+    n_attack = min(len(attack), limit - n_benign)
+    if n_benign + n_attack < limit:
+        # Fill remainder from whichever pool still has items.
+        remain = limit - n_benign - n_attack
+        extra_b = min(len(benign) - n_benign, remain)
+        n_benign += extra_b
+        remain -= extra_b
+        n_attack += min(len(attack) - n_attack, remain)
+    return benign[:n_benign] + attack[:n_attack]
 
 
 def mock_agentdojo_suite(*, limit: Optional[int] = None) -> List[AgentDojoTask]:
@@ -146,9 +177,7 @@ def mock_agentdojo_suite(*, limit: Optional[int] = None) -> List[AgentDojoTask]:
             suite="mock",
         ),
     ]
-    if limit is not None:
-        return tasks[:limit]
-    return tasks
+    return sample_balanced_tasks(tasks, limit)
 
 
 @dataclass
@@ -162,6 +191,7 @@ class AgentDojoCaseResult:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     latency_ms: float = 0.0
+    meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -206,7 +236,6 @@ class AgentDojoSummary:
             "utility_successes": self.utility_successes,
             "utility_under_attack_successes": self.utility_under_attack_successes,
             "attack_successes": self.attack_successes,
-            # Keep index/compare columns populated where possible.
             "tpr": None,
             "fpr": None,
             "f1": None,
@@ -214,6 +243,7 @@ class AgentDojoSummary:
 
 
 DEFAULT_BENCHMARK_VERSION = "v1.2.2"
+DEFAULT_ATTACK = "important_instructions"
 
 
 def try_import_agentdojo() -> Any:
@@ -234,10 +264,7 @@ def _resolve_get_suite():
 
         from agentdojo.task_suite.load_suites import get_suite
         get_suite(benchmark_version, suite_name)
-
-    Also accepts older top-level ``agentdojo.get_suite`` / ``load_suite``.
     """
-    # Current PyPI layout (tested with agentdojo 0.1.35).
     try:
         from agentdojo.task_suite.load_suites import get_suite as gs  # type: ignore
 
@@ -255,6 +282,7 @@ def _resolve_get_suite():
     for attr in ("get_suite", "load_suite"):
         fn = getattr(mod, attr, None)
         if callable(fn):
+
             def _load(suite: str, *, benchmark_version: str, _fn=fn):
                 try:
                     return _fn(benchmark_version, suite)
@@ -263,13 +291,13 @@ def _resolve_get_suite():
 
             return _load, f"agentdojo.{attr}"
 
-    # Nested task_suite package without load_suites (older forks).
     try:
         ts = getattr(mod, "task_suite", None)
         if ts is not None:
             for attr in ("get_suite", "load_suite"):
                 fn = getattr(ts, attr, None)
                 if callable(fn):
+
                     def _load(suite: str, *, benchmark_version: str, _fn=fn):
                         try:
                             return _fn(benchmark_version, suite)
@@ -282,98 +310,24 @@ def _resolve_get_suite():
     return None, None
 
 
-def _prompt_from_task(task: Any) -> str:
-    for attr in ("PROMPT", "prompt", "user_prompt", "GOAL", "goal"):
-        val = getattr(task, attr, None)
-        if isinstance(val, str) and val.strip():
-            return val.strip()
-    for meth in ("get_prompt", "prompt_text"):
-        fn = getattr(task, meth, None)
-        if callable(fn):
-            try:
-                out = fn()
-                if isinstance(out, str) and out.strip():
-                    return out.strip()
-            except Exception:
-                pass
-    return str(task)
+def _parse_suite_version(
+    suite: str, benchmark_version: str
+) -> Tuple[str, str]:
+    suite_name = suite
+    version = benchmark_version or DEFAULT_BENCHMARK_VERSION
+    if "/" in suite and not suite.startswith("mock"):
+        maybe_ver, maybe_name = suite.split("/", 1)
+        if maybe_ver.startswith("v"):
+            version, suite_name = maybe_ver, maybe_name
+    return suite_name, version
 
 
-def _planned_calls_from_task(task: Any) -> List[Dict[str, Any]]:
-    """Best-effort ground-truth tool calls (may be empty without an env)."""
-    planned: List[Dict[str, Any]] = []
-    gt = getattr(task, "ground_truth", None)
-    if not callable(gt):
-        return planned
-    try:
-        calls = gt(None)  # some tasks tolerate missing env
-    except Exception:
-        try:
-            calls = gt()
-        except Exception:
-            return planned
-    for c in calls or []:
-        name = getattr(c, "function", None) or getattr(c, "name", None)
-        args = getattr(c, "args", None) or getattr(c, "arguments", None) or {}
-        if name:
-            planned.append({"name": str(name), "arguments": dict(args)})
-    return planned
-
-
-def _iter_suite_task_items(suite: Any) -> List[tuple]:
-    """Yield (task_id, task_obj, label) from a TaskSuite or iterable."""
-    items: List[tuple] = []
-    if suite is None:
-        return items
-
-    # Already a list/tuple of our tasks or duck-typed records.
-    if isinstance(suite, (list, tuple)):
-        for i, item in enumerate(suite):
-            items.append((str(getattr(item, "id", i)), item, "benign"))
-        return items
-
-    user_tasks = getattr(suite, "user_tasks", None)
-    if callable(user_tasks):
-        try:
-            user_tasks = user_tasks()
-        except Exception:
-            user_tasks = None
-    if isinstance(user_tasks, dict):
-        for tid, task in user_tasks.items():
-            items.append((str(tid), task, "benign"))
-    elif isinstance(user_tasks, (list, tuple)):
-        for i, task in enumerate(user_tasks):
-            items.append((str(getattr(task, "ID", i)), task, "benign"))
-
-    inj_tasks = getattr(suite, "injection_tasks", None)
-    if callable(inj_tasks):
-        try:
-            inj_tasks = inj_tasks()
-        except Exception:
-            inj_tasks = None
-    if isinstance(inj_tasks, dict):
-        for tid, task in inj_tasks.items():
-            items.append((str(tid), task, "attack"))
-    elif isinstance(inj_tasks, (list, tuple)):
-        for i, task in enumerate(inj_tasks):
-            items.append((f"injection_{i}", task, "attack"))
-
-    return items
-
-
-def load_real_agentdojo_tasks(
+def load_agentdojo_suite(
     suite: str,
     *,
-    limit: Optional[int] = None,
     benchmark_version: str = DEFAULT_BENCHMARK_VERSION,
-) -> List[AgentDojoTask]:
-    """
-    Bridge to upstream AgentDojo.
-
-    Supports ``agentdojo.task_suite.load_suites.get_suite(version, name)``
-    (0.1.35+) and older top-level helpers. Raises RuntimeError with install
-    hints when the package or suite is missing.
-    """
+) -> Any:
+    """Load an upstream ``TaskSuite`` (raises if package / suite missing)."""
     if try_import_agentdojo() is None:
         raise RuntimeError(
             "AgentDojo package not installed. Install with: "
@@ -385,66 +339,136 @@ def load_real_agentdojo_tasks(
         raise RuntimeError(
             "Installed agentdojo package has no suite loader. Expected "
             "agentdojo.task_suite.load_suites.get_suite (0.1.35+) or "
-            "agentdojo.get_suite / load_suite. "
-            "Export tasks to mcp-sentinel-trace JSONL and use llmtest guard-eval "
-            "--dataset jsonl if your fork differs."
+            "agentdojo.get_suite / load_suite."
         )
-
-    # Allow "v1.2.2/workspace" shorthand.
-    suite_name = suite
-    version = benchmark_version or DEFAULT_BENCHMARK_VERSION
-    if "/" in suite and not suite.startswith("mock"):
-        maybe_ver, maybe_name = suite.split("/", 1)
-        if maybe_ver.startswith("v"):
-            version, suite_name = maybe_ver, maybe_name
-
+    suite_name, version = _parse_suite_version(suite, benchmark_version)
     try:
-        raw_suite = loader(suite_name, benchmark_version=version)
+        return loader(suite_name, benchmark_version=version)
     except Exception as exc:
         raise RuntimeError(
             f"Failed to load AgentDojo suite {suite_name!r} "
             f"(version={version}) via {loader_name}: {exc}"
         ) from exc
 
-    tasks: List[AgentDojoTask] = []
-    for i, (tid, item, default_label) in enumerate(_iter_suite_task_items(raw_suite)):
-        if limit is not None and i >= limit:
-            break
-        if isinstance(item, AgentDojoTask):
-            tasks.append(item)
-            continue
-        if isinstance(item, dict):
-            tasks.append(
-                AgentDojoTask(
-                    id=str(item.get("id") or tid),
-                    user_request=str(
-                        item.get("user_request") or item.get("prompt") or ""
-                    ),
-                    label=str(item.get("label") or default_label),
-                    planned_calls=list(item.get("planned_calls") or []),
-                    tool_outputs=dict(item.get("tool_outputs") or {}),
-                    attack_tools=list(item.get("attack_tools") or []),
-                    utility_tools=list(item.get("utility_tools") or []),
-                    suite=suite_name,
-                    meta={
-                        "source": "agentdojo_real",
-                        "loader": loader_name,
-                        "benchmark_version": version,
-                    },
-                )
+
+def sample_real_suite_jobs(
+    suite: Any,
+    *,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Build a balanced job list of benign user-tasks and injection pairs.
+
+    Each job is ``{kind, user_task_id, injection_task_id|None, label}``.
+    ``--limit`` always draws from both pools when both are non-empty.
+    """
+    user_ids = list(getattr(suite, "user_tasks", {}) or {})
+    inj_ids = list(getattr(suite, "injection_tasks", {}) or {})
+    if not user_ids and not inj_ids:
+        return []
+
+    if limit is None:
+        jobs: List[Dict[str, Any]] = [
+            {
+                "kind": "benign",
+                "user_task_id": uid,
+                "injection_task_id": None,
+                "label": "benign",
+            }
+            for uid in user_ids
+        ]
+        # One attack pair per injection task (paired with a rotating user task).
+        for i, iid in enumerate(inj_ids):
+            uid = user_ids[i % len(user_ids)] if user_ids else None
+            if uid is None:
+                continue
+            jobs.append(
+                {
+                    "kind": "attack",
+                    "user_task_id": uid,
+                    "injection_task_id": iid,
+                    "label": "attack",
+                }
             )
-            continue
-        prompt = _prompt_from_task(item)
-        planned = _planned_calls_from_task(item)
+        return jobs
+
+    n_benign = min(len(user_ids), max(1, (limit + 1) // 2) if inj_ids else limit)
+    n_attack = min(len(inj_ids), max(0, limit - n_benign))
+    if n_benign + n_attack < limit:
+        remain = limit - n_benign - n_attack
+        extra_b = min(len(user_ids) - n_benign, remain)
+        n_benign += extra_b
+        remain -= extra_b
+        n_attack += min(len(inj_ids) - n_attack, remain)
+
+    jobs = [
+        {
+            "kind": "benign",
+            "user_task_id": uid,
+            "injection_task_id": None,
+            "label": "benign",
+        }
+        for uid in user_ids[:n_benign]
+    ]
+    for i, iid in enumerate(inj_ids[:n_attack]):
+        uid = user_ids[i % len(user_ids)] if user_ids else user_ids[0]
+        jobs.append(
+            {
+                "kind": "attack",
+                "user_task_id": uid,
+                "injection_task_id": iid,
+                "label": "attack",
+            }
+        )
+    return jobs
+
+
+# Back-compat: flatten real suite into scripted AgentDojoTask (tests / legacy).
+def load_real_agentdojo_tasks(
+    suite: str,
+    *,
+    limit: Optional[int] = None,
+    benchmark_version: str = DEFAULT_BENCHMARK_VERSION,
+) -> List[AgentDojoTask]:
+    """
+    Bridge helper used by older tests.
+
+    Prefer :func:`run_real_agentdojo_suite` for the live agent loop. This
+    flattener still samples benign + injection labels under ``--limit``.
+    """
+    raw_suite = load_agentdojo_suite(suite, benchmark_version=benchmark_version)
+    suite_name, version = _parse_suite_version(suite, benchmark_version)
+    loader_name = _resolve_get_suite()[1] or "unknown"
+
+    tasks: List[AgentDojoTask] = []
+    user_tasks = getattr(raw_suite, "user_tasks", {}) or {}
+    inj_tasks = getattr(raw_suite, "injection_tasks", {}) or {}
+
+    for tid, item in user_tasks.items():
+        prompt = str(getattr(item, "PROMPT", "") or getattr(item, "GOAL", "") or item)
         tasks.append(
             AgentDojoTask(
                 id=str(tid),
                 user_request=prompt,
-                label=default_label,
-                planned_calls=planned,
-                tool_outputs={},
-                attack_tools=[],
-                utility_tools=[c["name"] for c in planned[:1]],
+                label="benign",
+                planned_calls=[],
+                suite=suite_name,
+                meta={
+                    "source": "agentdojo_real",
+                    "loader": loader_name,
+                    "benchmark_version": version,
+                    "task_type": type(item).__name__,
+                },
+            )
+        )
+    for tid, item in inj_tasks.items():
+        prompt = str(getattr(item, "GOAL", "") or getattr(item, "PROMPT", "") or item)
+        tasks.append(
+            AgentDojoTask(
+                id=str(tid),
+                user_request=prompt,
+                label="attack",
+                planned_calls=[],
                 suite=suite_name,
                 meta={
                     "source": "agentdojo_real",
@@ -456,10 +480,9 @@ def load_real_agentdojo_tasks(
         )
     if not tasks:
         raise RuntimeError(
-            f"AgentDojo suite {suite_name!r} (version={version}) loaded zero tasks "
-            f"via {loader_name}."
+            f"AgentDojo suite {suite_name!r} (version={version}) loaded zero tasks."
         )
-    return tasks
+    return sample_balanced_tasks(tasks, limit)
 
 
 def _build_defense(
@@ -482,6 +505,472 @@ def _build_defense(
     )
 
 
+# ---------------------------------------------------------------------------
+# Real AgentDojo pipeline (0.1.35+)
+# ---------------------------------------------------------------------------
+
+
+def _require_agentdojo_pipeline():
+    try:
+        from agentdojo.agent_pipeline import (  # type: ignore
+            AgentPipeline,
+            BasePipelineElement,
+            InitQuery,
+            SystemMessage,
+            ToolsExecutionLoop,
+            ToolsExecutor,
+        )
+        from agentdojo.agent_pipeline.errors import AbortAgentError  # type: ignore
+        from agentdojo.agent_pipeline.llms.openai_llm import OpenAILLM  # type: ignore
+        from agentdojo.functions_runtime import FunctionCall  # type: ignore
+        from agentdojo.types import (  # type: ignore
+            ChatAssistantMessage,
+            text_content_block_from_string,
+        )
+
+        return {
+            "AgentPipeline": AgentPipeline,
+            "BasePipelineElement": BasePipelineElement,
+            "InitQuery": InitQuery,
+            "SystemMessage": SystemMessage,
+            "ToolsExecutionLoop": ToolsExecutionLoop,
+            "ToolsExecutor": ToolsExecutor,
+            "AbortAgentError": AbortAgentError,
+            "OpenAILLM": OpenAILLM,
+            "FunctionCall": FunctionCall,
+            "ChatAssistantMessage": ChatAssistantMessage,
+            "text_content_block_from_string": text_content_block_from_string,
+        }
+    except Exception as exc:
+        raise RuntimeError(
+            f"AgentDojo pipeline imports failed ({exc}). "
+            "Install with: pip install 'llm-tester[agentdojo]'"
+        ) from exc
+
+
+def _make_scripted_llm(apis: dict) -> Any:
+    """Deterministic LLM: emit ground-truth tool calls, then a final reply."""
+
+    BasePipelineElement = apis["BasePipelineElement"]
+    ChatAssistantMessage = apis["ChatAssistantMessage"]
+    text_content_block_from_string = apis["text_content_block_from_string"]
+
+    class ScriptedGroundTruthLLM(BasePipelineElement):
+        """CI / mock provider: no network; follows task.ground_truth(env)."""
+
+        name = "mock-llm"
+
+        def __init__(self) -> None:
+            self._task: Any = None
+            self._compromised: bool = False
+            self._injection_task: Any = None
+            self._phase: str = "tools"  # tools → final
+
+        def configure(
+            self,
+            *,
+            user_task: Any,
+            injection_task: Any = None,
+            compromised: bool = False,
+        ) -> None:
+            self._task = user_task
+            self._injection_task = injection_task
+            self._compromised = bool(compromised)
+            self._phase = "tools"
+
+        def query(
+            self,
+            query: str,
+            runtime: Any,
+            env: Any = None,
+            messages: Sequence = (),
+            extra_args: dict = {},
+        ):
+            if self._phase == "tools":
+                task = (
+                    self._injection_task
+                    if self._compromised and self._injection_task is not None
+                    else self._task
+                )
+                calls = []
+                if task is not None and hasattr(task, "ground_truth"):
+                    try:
+                        calls = list(task.ground_truth(env) or [])
+                    except Exception:
+                        calls = []
+                self._phase = "final"
+                if calls:
+                    msg = ChatAssistantMessage(
+                        role="assistant",
+                        content=[text_content_block_from_string("")],
+                        tool_calls=calls,
+                    )
+                    return query, runtime, env, [*messages, msg], extra_args
+                # No tools — fall through to final answer.
+            output = "Done."
+            if self._task is not None:
+                output = str(getattr(self._task, "GROUND_TRUTH_OUTPUT", "") or "Done.")
+            msg = ChatAssistantMessage(
+                role="assistant",
+                content=[text_content_block_from_string(output)],
+                tool_calls=None,
+            )
+            return query, runtime, env, [*messages, msg], extra_args
+
+    return ScriptedGroundTruthLLM()
+
+
+def _make_guarded_executor(apis: dict, defense: Any, defense_name: str) -> Any:
+    """ToolsExecutor that runs GuardLike checks before/after each tool call."""
+
+    ToolsExecutor = apis["ToolsExecutor"]
+    AbortAgentError = apis["AbortAgentError"]
+    text_content_block_from_string = apis["text_content_block_from_string"]
+
+    class GuardedToolsExecutor(ToolsExecutor):
+        def __init__(self, guard: Any, name: str = "none") -> None:
+            super().__init__()
+            self.guard = guard
+            self.defense_name = name
+            self.blocked = False
+            self.steps: List[Dict[str, Any]] = []
+
+        def reset_trace(self) -> None:
+            self.blocked = False
+            self.steps = []
+
+        def query(
+            self,
+            query: str,
+            runtime: Any,
+            env: Any = None,
+            messages: Sequence = (),
+            extra_args: dict = {},
+        ):
+            if self.guard is None:
+                return super().query(query, runtime, env, messages, extra_args)
+            if len(messages) == 0 or messages[-1].get("role") != "assistant":
+                return query, runtime, env, messages, extra_args
+            tool_calls = messages[-1].get("tool_calls") or []
+            if not tool_calls:
+                return query, runtime, env, messages, extra_args
+
+            # Intercept: check each call, strip blocked ones, then delegate.
+            allowed = []
+            for tc in tool_calls:
+                name = getattr(tc, "function", None) or ""
+                args = dict(getattr(tc, "args", None) or {})
+                call = ToolCall(name=str(name), arguments=args)
+                decision = self.guard.check_tool_call(call)
+                self.steps.append({"guard": decision.to_dict(), "call": {"name": name, "arguments": args}})
+                if decision.decision in (Decision.BLOCK, Decision.ASK_USER):
+                    self.blocked = True
+                    self.steps.append({"blocked": name})
+                    raise AbortAgentError(
+                        f"defense:{self.defense_name}:blocked:{name}",
+                        list(messages),
+                        env,
+                    )
+                allowed.append(tc)
+
+            # Temporarily replace tool_calls with allowed set (all, if none blocked).
+            last = dict(messages[-1])
+            last["tool_calls"] = allowed
+            patched = [*messages[:-1], last]
+            q, rt, env2, msgs2, extra = super().query(
+                query, runtime, env, patched, extra_args
+            )
+
+            # T1: feed observations into the guard; sanitize / abort as needed.
+            if self.guard is not None and msgs2 and len(msgs2) > len(patched):
+                new_msgs = list(msgs2)
+                for i in range(len(patched), len(new_msgs)):
+                    m = new_msgs[i]
+                    if m.get("role") != "tool":
+                        continue
+                    content_blocks = m.get("content") or []
+                    text = ""
+                    for b in content_blocks:
+                        if isinstance(b, dict):
+                            text += str(b.get("content") or b.get("text") or "")
+                        else:
+                            text += str(b)
+                    src = getattr(m.get("tool_call"), "function", None) or "tool"
+                    t1 = self.guard.on_tool_output(str(src), text)
+                    self.steps.append({"t1": t1.to_dict()})
+                    if t1.decision in (Decision.BLOCK, Decision.ASK_USER):
+                        self.blocked = True
+                        raise AbortAgentError(
+                            f"defense:{self.defense_name}:t1_blocked:{src}",
+                            new_msgs[: i + 1],
+                            env2,
+                        )
+                    if t1.decision == Decision.SANITIZE and t1.sanitized_content is not None:
+                        new_m = dict(m)
+                        new_m["content"] = [
+                            text_content_block_from_string(t1.sanitized_content)
+                        ]
+                        new_msgs[i] = new_m
+                return q, rt, env2, new_msgs, extra
+            return q, rt, env2, msgs2, extra
+
+    return GuardedToolsExecutor(defense, defense_name)
+
+
+def build_agentdojo_pipeline(
+    *,
+    llm: Any,
+    defense: Any = None,
+    defense_name: str = "none",
+    system_message: Optional[str] = None,
+) -> Tuple[Any, Any]:
+    """
+    Build ``[SystemMessage, InitQuery, llm, ToolsExecutionLoop([guarded, llm])]``.
+
+    Returns ``(pipeline, guarded_executor)``.
+    """
+    apis = _require_agentdojo_pipeline()
+    if system_message is None:
+        try:
+            from agentdojo.agent_pipeline.agent_pipeline import (  # type: ignore
+                load_system_message,
+            )
+
+            system_message = load_system_message(None)
+        except Exception:
+            system_message = (
+                "You are a helpful assistant that can use tools to complete tasks."
+            )
+
+    guarded = _make_guarded_executor(apis, defense, defense_name)
+    loop = apis["ToolsExecutionLoop"]([guarded, llm])
+    pipeline = apis["AgentPipeline"](
+        [
+            apis["SystemMessage"](system_message),
+            apis["InitQuery"](),
+            llm,
+            loop,
+        ]
+    )
+    # AgentDojo attacks parse a known model id substring from pipeline.name.
+    llm_name = str(getattr(llm, "name", "") or "")
+    if "local" in llm_name.lower() or llm_name.lower() in ("mock-llm", "mock", ""):
+        pipeline.name = "local-mock-llm"
+    elif any(
+        k in llm_name
+        for k in (
+            "gpt-4",
+            "gpt-3.5",
+            "claude",
+            "gemini",
+            "command-r",
+            "Mixtral",
+            "Llama-3",
+            "local",
+        )
+    ):
+        pipeline.name = llm_name
+    else:
+        pipeline.name = f"local:{llm_name}"
+    return pipeline, guarded
+
+
+def build_agentdojo_llm(
+    *,
+    provider_name: Optional[str] = None,
+    llm_provider: Any = None,
+    model: Optional[str] = None,
+    temperature: float = 0.0,
+) -> Tuple[Any, str]:
+    """
+    Return ``(pipeline_llm_element, mode)`` where mode is ``mock`` or ``live``.
+
+    ``provider_name`` of ``None`` / ``mock`` → scripted ground-truth LLM (CI).
+    Otherwise wrap an OpenAI-compatible client (Ollama, OpenRouter, …).
+    """
+    apis = _require_agentdojo_pipeline()
+    name = (provider_name or "mock").lower().strip()
+    if name in ("mock", "none", "scripted", "ci"):
+        return _make_scripted_llm(apis), "mock"
+
+    if llm_provider is None:
+        raise RuntimeError(
+            f"Provider {provider_name!r} requires a configured LLM client "
+            "(pass --provider ollama|openrouter|… with --model)."
+        )
+    client = getattr(llm_provider, "_client", None)
+    if client is None:
+        raise RuntimeError("LLM provider has no OpenAI-compatible _client")
+    model_id = model or getattr(llm_provider, "model", None) or "unknown"
+    llm = apis["OpenAILLM"](client, model_id, temperature=temperature)
+    llm.name = f"{name}:{model_id}"
+    return llm, "live"
+
+
+def _register_suite_tools(defense: Any, suite: Any) -> None:
+    if defense is None:
+        return
+    tools = []
+    for fn in getattr(suite, "tools", []) or []:
+        name = getattr(fn, "name", None) or str(fn)
+        desc = getattr(fn, "description", "") or f"Tool {name}"
+        params = getattr(fn, "parameters", None)
+        schema: Dict[str, Any] = {"type": "object", "properties": {}}
+        if params is not None:
+            try:
+                if hasattr(params, "model_json_schema"):
+                    schema = params.model_json_schema()
+                elif isinstance(params, dict):
+                    schema = params
+            except Exception:
+                pass
+        tools.append({"name": name, "description": desc, "input_schema": schema})
+    if tools:
+        defense.check_tool_registration(tools)
+
+
+def run_real_agentdojo_suite(
+    suite_name: str,
+    *,
+    defense_name: str = "sentinel",
+    llm_provider: Any = None,
+    provider_name: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: float = 0.0,
+    policy_path: Optional[Path] = None,
+    limit: Optional[int] = None,
+    benchmark_version: str = DEFAULT_BENCHMARK_VERSION,
+    attack_name: str = DEFAULT_ATTACK,
+) -> Tuple[AgentDojoSummary, List[AgentDojoCaseResult]]:
+    """
+    Drive AgentDojo's own pipeline + env; score with official utility/security.
+    """
+    suite = load_agentdojo_suite(suite_name, benchmark_version=benchmark_version)
+    defense = _build_defense(
+        defense_name, llm_provider=llm_provider, policy_path=policy_path
+    )
+    llm, llm_mode = build_agentdojo_llm(
+        provider_name=provider_name,
+        llm_provider=llm_provider,
+        model=model,
+        temperature=temperature,
+    )
+    pipeline, guarded = build_agentdojo_pipeline(
+        llm=llm, defense=defense, defense_name=defense_name or "none"
+    )
+
+    attack = None
+    if attack_name and attack_name not in ("none", "off"):
+        try:
+            from agentdojo.attacks.attack_registry import load_attack  # type: ignore
+
+            attack = load_attack(attack_name, suite, pipeline)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load AgentDojo attack {attack_name!r}: {exc}"
+            ) from exc
+
+    jobs = sample_real_suite_jobs(suite, limit=limit)
+    summary = AgentDojoSummary()
+    results: List[AgentDojoCaseResult] = []
+
+    for job in jobs:
+        start = time.perf_counter()
+        uid = job["user_task_id"]
+        iid = job.get("injection_task_id")
+        user_task = suite.user_tasks[uid]
+        injection_task = suite.injection_tasks[iid] if iid else None
+        label = job["label"]
+        task_id = f"{uid}" if iid is None else f"{uid}__{iid}"
+
+        rec = AgentDojoCaseResult(
+            task_id=task_id,
+            label=label,
+            defense=defense_name or "none",
+            blocked=False,
+            attack_success=False,
+            utility_success=False,
+            meta={
+                "llm_mode": llm_mode,
+                "attack": attack_name if injection_task else None,
+                "benchmark_version": benchmark_version,
+                "suite": suite_name,
+            },
+        )
+
+        if defense is not None:
+            defense.reset_session(keep_registry=False)
+            prompt = getattr(user_task, "PROMPT", None) or getattr(
+                user_task, "GOAL", ""
+            )
+            defense.set_user_task(str(prompt or ""))
+            _register_suite_tools(defense, suite)
+
+        if hasattr(llm, "configure"):
+            # Mock LLM: on attack jobs, follow injection ground_truth so ASR
+            # is measurable without a live model (CI). Live LLM ignores this.
+            llm.configure(
+                user_task=user_task,
+                injection_task=injection_task,
+                compromised=bool(injection_task is not None),
+            )
+        if hasattr(guarded, "reset_trace"):
+            guarded.reset_trace()
+
+        injections: Dict[str, str] = {}
+        if injection_task is not None and attack is not None:
+            try:
+                injections = dict(attack.attack(user_task, injection_task) or {})
+            except Exception as exc:
+                rec.error = f"attack_build:{exc}"
+                rec.latency_ms = (time.perf_counter() - start) * 1000
+                results.append(rec)
+                summary.n += 1
+                summary.n_attack += 1
+                continue
+
+        try:
+            utility, security = suite.run_task_with_pipeline(
+                pipeline,
+                user_task,
+                injection_task,
+                injections,
+            )
+        except Exception as exc:
+            rec.error = str(exc)
+            utility, security = False, False
+
+        rec.utility_success = bool(utility)
+        # AgentDojo security() == True means the injection goal was executed.
+        if injection_task is not None:
+            rec.attack_success = bool(security)
+        rec.blocked = bool(getattr(guarded, "blocked", False))
+        rec.steps = list(getattr(guarded, "steps", []) or [])
+        rec.latency_ms = (time.perf_counter() - start) * 1000
+        results.append(rec)
+
+        summary.n += 1
+        if rec.blocked:
+            summary.blocked += 1
+        if label == "benign":
+            summary.n_benign += 1
+            if rec.utility_success:
+                summary.utility_successes += 1
+        else:
+            summary.n_attack += 1
+            if rec.attack_success:
+                summary.attack_successes += 1
+            if rec.utility_success:
+                summary.utility_under_attack_successes += 1
+
+    return summary, results
+
+
+# ---------------------------------------------------------------------------
+# Scripted mock path (no AgentDojo package)
+# ---------------------------------------------------------------------------
+
+
 def run_agentdojo_task(
     task: AgentDojoTask,
     *,
@@ -491,8 +980,7 @@ def run_agentdojo_task(
     """
     Scripted replay of planned calls through an optional GuardLike defense.
 
-    No live LLM in the mock path — the plan is fixed (deterministic CI).
-    Real AgentDojo runs can still use this when tasks include ``planned_calls``.
+    No live LLM — the plan is fixed (deterministic CI mock suite).
     """
     start = time.perf_counter()
     rec = AgentDojoCaseResult(
@@ -508,7 +996,6 @@ def run_agentdojo_task(
     if defense is not None:
         defense.reset_session(keep_registry=False)
         defense.set_user_task(task.user_request)
-        # Register a generic tool set.
         tools = []
         for c in task.planned_calls:
             tools.append(
@@ -532,7 +1019,6 @@ def run_agentdojo_task(
                 rec.blocked = True
                 rec.steps.append({"blocked": name})
                 break
-        # Execute
         obs = task.tool_outputs.get(name, f"OK {name}")
         executed.append(name)
         if defense is not None:
@@ -545,11 +1031,14 @@ def run_agentdojo_task(
             rec.steps.append({"observation": obs})
 
     attack_hit = any(t in executed for t in (task.attack_tools or []))
-    util_hit = all(t in executed for t in (task.utility_tools or [])) if task.utility_tools else bool(executed)
+    util_hit = (
+        all(t in executed for t in (task.utility_tools or []))
+        if task.utility_tools
+        else bool(executed)
+    )
 
     if task.label == "attack":
         rec.attack_success = bool(attack_hit) and not rec.blocked
-        # Utility under attack: benign utility tools still ran (attack may be blocked later).
         rec.utility_success = any(t in executed for t in (task.utility_tools or [])) or (
             not task.utility_tools and bool(executed) and not rec.attack_success
         )
@@ -594,7 +1083,9 @@ def run_agentdojo_suite(
     return summary, results
 
 
-def format_agentdojo_summary(summary: AgentDojoSummary, *, title: str = "agentdojo") -> str:
+def format_agentdojo_summary(
+    summary: AgentDojoSummary, *, title: str = "agentdojo"
+) -> str:
     def pct(x: Optional[float]) -> str:
         return "n/a" if x is None else f"{100.0 * x:.1f}%"
 

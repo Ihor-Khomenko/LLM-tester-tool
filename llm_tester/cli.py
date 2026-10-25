@@ -361,20 +361,32 @@ def build_parser() -> argparse.ArgumentParser:
     adj.add_argument(
         "--real",
         action="store_true",
-        help="Load upstream AgentDojo suite (requires package; not for CI)",
+        help=(
+            "Run upstream AgentDojo 0.1.35+ agent pipeline + env "
+            "(requires package). Use --provider mock for CI."
+        ),
     )
     adj.add_argument(
         "--benchmark-version",
         default="v1.2.2",
         help="AgentDojo benchmark version for --real (default v1.2.2)",
     )
+    adj.add_argument(
+        "--attack",
+        default="important_instructions",
+        help="AgentDojo attack name for --real injection jobs "
+        "(default important_instructions; 'none' skips injections)",
+    )
     adj.add_argument("--limit", type=int, default=None)
     adj.add_argument("--policy", type=Path, default=None)
     adj.add_argument(
         "--provider",
         default=None,
-        choices=sorted(PROVIDERS.keys()),
-        help="LLM for task_shield / live agent path (ollama recommended)",
+        choices=sorted(PROVIDERS.keys()) + ["mock"],
+        help=(
+            "Agent LLM for --real: mock (CI default), ollama, openrouter, … "
+            "Also used for task_shield defense"
+        ),
     )
     adj.add_argument("--model", default=None, help="e.g. qwen2.5:3b")
     adj.add_argument("--base-url", default=None)
@@ -851,18 +863,48 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
 def cmd_agentdojo(args: argparse.Namespace) -> int:
     from llm_tester.agent.agentdojo_adapter import (
         format_agentdojo_summary,
-        load_real_agentdojo_tasks,
         mock_agentdojo_suite,
         run_agentdojo_suite,
+        run_real_agentdojo_suite,
+        try_import_agentdojo,
     )
     from llm_tester.agent.provider_adapter import build_llm_chat
 
+    provider_name = args.provider
+    llm = None
+    if provider_name and provider_name.lower() not in ("mock", "none", "scripted", "ci"):
+        llm = build_llm_chat(
+            provider_name,
+            args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            max_retries=args.max_retries,
+        )
+
     if args.real:
+        if try_import_agentdojo() is None:
+            print(
+                "AgentDojo package not installed. Install with: "
+                "pip install 'llm-tester[agentdojo]'  "
+                "(or use --suite mock without --real).",
+                file=sys.stderr,
+            )
+            return 1
+        # Default --real LLM is the offline scripted mock (no live API).
+        effective_provider = provider_name or "mock"
         try:
-            tasks = load_real_agentdojo_tasks(
+            summary, results = run_real_agentdojo_suite(
                 args.suite,
+                defense_name=args.defense,
+                llm_provider=llm,
+                provider_name=effective_provider,
+                model=args.model,
+                temperature=args.temperature,
+                policy_path=args.policy,
                 limit=args.limit,
                 benchmark_version=args.benchmark_version,
+                attack_name=args.attack,
             )
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr)
@@ -876,24 +918,12 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
             )
             return 2
         tasks = mock_agentdojo_suite(limit=args.limit)
-
-    llm = None
-    if args.provider:
-        llm = build_llm_chat(
-            args.provider,
-            args.model,
-            base_url=args.base_url,
-            temperature=args.temperature,
-            seed=None if args.no_seed else args.seed,
-            max_retries=args.max_retries,
+        summary, results = run_agentdojo_suite(
+            tasks,
+            defense_name=args.defense,
+            llm_provider=llm,
+            policy_path=args.policy,
         )
-
-    summary, results = run_agentdojo_suite(
-        tasks,
-        defense_name=args.defense,
-        llm_provider=llm,
-        policy_path=args.policy,
-    )
 
     run_dir = prepare_run_dir(
         args,
@@ -909,14 +939,17 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
     metrics_dict["suite"] = args.suite
     metrics_dict["defense"] = args.defense
     metrics_dict["real"] = bool(args.real)
+    metrics_dict["attack"] = getattr(args, "attack", None) if args.real else None
     config = {
         "command": "agentdojo",
         "suite": args.suite,
         "defense": args.defense,
         "real": bool(args.real),
         "limit": args.limit,
-        "provider": args.provider,
+        "provider": provider_name or ("mock" if args.real else None),
         "model": args.model,
+        "attack": getattr(args, "attack", None) if args.real else None,
+        "benchmark_version": args.benchmark_version if args.real else None,
     }
     finalize_run_dir(
         run_dir,
@@ -924,7 +957,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
         config=config,
         metrics=metrics_dict,
         argv=sys.argv[1:],
-        provider=args.provider,
+        provider=provider_name,
         model=args.model,
         extra_sha=parse_extra_sha(args.extra_sha),
     )

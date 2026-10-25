@@ -2,14 +2,45 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import time
+from dataclasses import replace
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from llm_tester.sentinel.policy import SentinelPolicy
 from llm_tester.sentinel.provider import LLMChat, extract_chat_text
+from llm_tester.sentinel.registry import sha256_text
 from llm_tester.sentinel.types import Decision, StageScore, ToolCall
+
+# Judge sampling is always deterministic for reproducibility.
+S4_TEMPERATURE = 0.0
+S4_DEFAULT_SEED = 42
+
+
+def _provider_for_judge(provider: Any, *, temperature: float, seed: Optional[int]) -> Any:
+    """Clone provider params to force temperature/seed without mutating frozen configs."""
+    params = getattr(provider, "params", None)
+    if params is None:
+        return provider
+    kwargs = {}
+    if hasattr(params, "temperature"):
+        kwargs["temperature"] = float(temperature)
+    if seed is not None and hasattr(params, "seed"):
+        kwargs["seed"] = seed
+    if not kwargs:
+        return provider
+    try:
+        new_params = replace(params, **kwargs)
+    except Exception:
+        return provider
+    try:
+        clone = copy.copy(provider)
+        clone.params = new_params
+        return clone
+    except Exception:
+        return provider
 
 
 class JudgeFamily(str, Enum):
@@ -246,9 +277,22 @@ class JudgeStage:
             prior_reasons,
             family=family,
         )
+        prompt_hash = sha256_text(f"{system}\n{prompt}")
+        seed = getattr(getattr(self.provider, "params", None), "seed", None)
+        if seed is None:
+            seed = S4_DEFAULT_SEED
         try:
             assert self.provider is not None
-            result = self.provider.chat(prompt, system=system)
+            client = _provider_for_judge(
+                self.provider, temperature=S4_TEMPERATURE, seed=int(seed)
+            )
+            # Prefer explicit kwargs when the client accepts them; else cloned params.
+            try:
+                result = client.chat(
+                    prompt, system=system, temperature=S4_TEMPERATURE, seed=int(seed)
+                )
+            except TypeError:
+                result = client.chat(prompt, system=system)
             content = extract_chat_text(result)
             verdict, parse_details = parse_judge_verdict(
                 content,
@@ -260,6 +304,9 @@ class JudgeStage:
                 **parse_details,
                 "raw": content[:500],
                 "llm_calls": 1,
+                "prompt_hash": prompt_hash,
+                "temperature": S4_TEMPERATURE,
+                "seed": int(seed),
             }
             if verdict is None:
                 # Defer to prior cascade (typically S3-driven grey-zone risk).
@@ -273,7 +320,14 @@ class JudgeStage:
         except Exception as exc:
             score = prior_risk
             reasons = ["s4:error"]
-            details = {"error": str(exc), "family": family, "llm_calls": 1}
+            details = {
+                "error": str(exc),
+                "family": family,
+                "llm_calls": 1,
+                "prompt_hash": prompt_hash,
+                "temperature": S4_TEMPERATURE,
+                "seed": int(seed) if seed is not None else None,
+            }
 
         elapsed = (time.perf_counter() - start) * 1000
         return StageScore(
