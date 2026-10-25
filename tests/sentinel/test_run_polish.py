@@ -166,6 +166,7 @@ def test_unrequested_resource_blocked_generically():
     )
     assert findings
     assert findings[0]["kind"] == "unrequested_resource"
+    assert findings[0].get("severity") == "hard"
 
     g = SentinelGuard(SentinelPolicy(enable_s4=False, enable_s3=False))
     g.set_user_task("Summarise my meeting notes from yesterday")
@@ -176,7 +177,9 @@ def test_unrequested_resource_blocked_generically():
         )
     )
     assert d.decision in (Decision.BLOCK, Decision.ASK_USER)
-    assert any("unrequested_resource" in r for r in d.reasons)
+    # Owned by S1 only (not duplicated on S2).
+    assert any(r.startswith("s1:unrequested_resource") for r in d.reasons)
+    assert not any(r.startswith("s2:unrequested_resource") for r in d.reasons)
 
 
 def test_requested_resource_not_flagged():
@@ -192,3 +195,27 @@ def test_requested_resource_not_flagged():
     )
     assert d.decision == Decision.ALLOW
     assert not any("unrequested_resource" in r for r in d.reasons)
+
+
+def test_soft_unrequested_alone_does_not_block():
+    """Relative ordinary files are soft — alone must stay under τ_high (InjecAgent FPR)."""
+    findings = unrequested_resource_access(
+        {"path": "meeting_notes.txt"},
+        "What is the weather in Kyiv?",
+        tool_name="read_text_file",
+    )
+    assert findings
+    assert findings[0]["severity"] == "soft"
+
+    g = SentinelGuard(
+        SentinelPolicy(enable_s4=False, enable_s2=False, enable_s3=False)
+    )
+    g.set_user_task("What is the weather in Kyiv?")
+    d = g.check_tool_call(
+        ToolCall(
+            name="read_text_file",
+            arguments={"path": "meeting_notes.txt"},
+        )
+    )
+    assert d.decision == Decision.ALLOW
+    assert d.risk_score < 0.70

@@ -60,6 +60,7 @@ class LLMProvider:
         *,
         system: Optional[str] = None,
         messages: Optional[List[Dict[str, str]]] = None,
+        stop: Optional[List[str]] = None,
     ) -> ChatResult:
         if messages is None:
             messages = []
@@ -76,6 +77,8 @@ class LLMProvider:
             kwargs["seed"] = self.params.seed
         if self.params.max_tokens is not None:
             kwargs["max_tokens"] = self.params.max_tokens
+        if stop:
+            kwargs["stop"] = list(stop)
 
         attempt = 0
         start = time.perf_counter()
