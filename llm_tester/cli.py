@@ -363,6 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Load upstream AgentDojo suite (requires package; not for CI)",
     )
+    adj.add_argument(
+        "--benchmark-version",
+        default="v1.2.2",
+        help="AgentDojo benchmark version for --real (default v1.2.2)",
+    )
     adj.add_argument("--limit", type=int, default=None)
     adj.add_argument("--policy", type=Path, default=None)
     adj.add_argument(
@@ -854,7 +859,11 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
 
     if args.real:
         try:
-            tasks = load_real_agentdojo_tasks(args.suite, limit=args.limit)
+            tasks = load_real_agentdojo_tasks(
+                args.suite,
+                limit=args.limit,
+                benchmark_version=args.benchmark_version,
+            )
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -1010,6 +1019,9 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
     metrics_dict["command"] = "baselines-eval"
     metrics_dict["baseline"] = args.baseline
     metrics_dict["baseline_available"] = bool(getattr(guard, "available", True))
+    last_err = getattr(guard, "last_error", None)
+    if last_err:
+        metrics_dict["last_error"] = last_err
     config: Dict[str, Any] = {
         "command": "baselines-eval",
         "baseline": args.baseline,
@@ -1023,6 +1035,7 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
         "model": args.model,
         "baseline_available": bool(getattr(guard, "available", True)),
         "skip_reason": getattr(guard, "skip_reason", None),
+        "errors": metrics.errors,
     }
     finalize_run_dir(
         run_dir,
@@ -1035,6 +1048,12 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
         extra_sha=parse_extra_sha(args.extra_sha),
     )
     print(f"Run artefacts written to {run_dir}")
+    if metrics.errors:
+        print(
+            f"ERROR: baseline reported {metrics.errors} provider/config error(s). "
+            f"Last: {last_err or '(see metrics.errors)'}",
+            file=sys.stderr,
+        )
     if args.json:
         print(json.dumps(metrics_dict, indent=2))
     else:
@@ -1043,6 +1062,9 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
                 metrics, title=f"baselines-eval baseline={args.baseline} dataset={args.dataset}"
             )
         )
+    # Non-zero exit when every case errored (silent-ALLOW regression).
+    if metrics.n and metrics.errors >= metrics.n:
+        return 3
     return 0
 
 

@@ -255,7 +255,12 @@ class JudgeStage:
                 family=family,
                 ambiguous=self.policy.s4_ambiguous_policy,
             )
-            details = {"family": family, **parse_details, "raw": content[:500]}
+            details = {
+                "family": family,
+                **parse_details,
+                "raw": content[:500],
+                "llm_calls": 1,
+            }
             if verdict is None:
                 # Defer to prior cascade (typically S3-driven grey-zone risk).
                 score = float(prior_risk)
@@ -268,7 +273,7 @@ class JudgeStage:
         except Exception as exc:
             score = prior_risk
             reasons = ["s4:error"]
-            details = {"error": str(exc), "family": family}
+            details = {"error": str(exc), "family": family, "llm_calls": 1}
 
         elapsed = (time.perf_counter() - start) * 1000
         return StageScore(

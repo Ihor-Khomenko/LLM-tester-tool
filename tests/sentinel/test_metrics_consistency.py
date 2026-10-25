@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from llm_tester.agent.eval import evaluate_traces
 from llm_tester.agent.traces import TraceStep
 from llm_tester.sentinel.guard import SentinelGuard
@@ -98,8 +100,11 @@ def test_asr_aligned_with_any_intervention_tpr():
     assert abs(metrics.asr_with_guard - (1.0 - metrics.tpr)) < 1e-9
     # Hard-block ASR remains available for analysis.
     assert metrics.asr_block_only == 1.0
+    assert metrics.asr_block_only == pytest.approx(
+        metrics.block_only.fn / metrics.n_attack
+    )
     d = metrics.to_dict()
-    assert d["detection_rule"]["asr_with_guard"].startswith("any_intervention")
+    assert "any_intervention" in d["detection_rule"]["asr_with_guard"]
 
 
 def test_asr_matches_block_only_when_hard_blocked():

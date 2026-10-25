@@ -213,6 +213,9 @@ class AgentDojoSummary:
         }
 
 
+DEFAULT_BENCHMARK_VERSION = "v1.2.2"
+
+
 def try_import_agentdojo() -> Any:
     """Return upstream module or None (never raises for missing install)."""
     try:
@@ -223,80 +226,239 @@ def try_import_agentdojo() -> Any:
         return None
 
 
+def _resolve_get_suite():
+    """
+    Locate a suite loader across AgentDojo versions.
+
+    Preferred (0.1.35+)::
+
+        from agentdojo.task_suite.load_suites import get_suite
+        get_suite(benchmark_version, suite_name)
+
+    Also accepts older top-level ``agentdojo.get_suite`` / ``load_suite``.
+    """
+    # Current PyPI layout (tested with agentdojo 0.1.35).
+    try:
+        from agentdojo.task_suite.load_suites import get_suite as gs  # type: ignore
+
+        def _load(suite: str, *, benchmark_version: str):
+            return gs(benchmark_version, suite)
+
+        return _load, "agentdojo.task_suite.load_suites.get_suite"
+    except Exception:
+        pass
+
+    mod = try_import_agentdojo()
+    if mod is None:
+        return None, None
+
+    for attr in ("get_suite", "load_suite"):
+        fn = getattr(mod, attr, None)
+        if callable(fn):
+            def _load(suite: str, *, benchmark_version: str, _fn=fn):
+                try:
+                    return _fn(benchmark_version, suite)
+                except TypeError:
+                    return _fn(suite)
+
+            return _load, f"agentdojo.{attr}"
+
+    # Nested task_suite package without load_suites (older forks).
+    try:
+        ts = getattr(mod, "task_suite", None)
+        if ts is not None:
+            for attr in ("get_suite", "load_suite"):
+                fn = getattr(ts, attr, None)
+                if callable(fn):
+                    def _load(suite: str, *, benchmark_version: str, _fn=fn):
+                        try:
+                            return _fn(benchmark_version, suite)
+                        except TypeError:
+                            return _fn(suite)
+
+                    return _load, f"agentdojo.task_suite.{attr}"
+    except Exception:
+        pass
+    return None, None
+
+
+def _prompt_from_task(task: Any) -> str:
+    for attr in ("PROMPT", "prompt", "user_prompt", "GOAL", "goal"):
+        val = getattr(task, attr, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    for meth in ("get_prompt", "prompt_text"):
+        fn = getattr(task, meth, None)
+        if callable(fn):
+            try:
+                out = fn()
+                if isinstance(out, str) and out.strip():
+                    return out.strip()
+            except Exception:
+                pass
+    return str(task)
+
+
+def _planned_calls_from_task(task: Any) -> List[Dict[str, Any]]:
+    """Best-effort ground-truth tool calls (may be empty without an env)."""
+    planned: List[Dict[str, Any]] = []
+    gt = getattr(task, "ground_truth", None)
+    if not callable(gt):
+        return planned
+    try:
+        calls = gt(None)  # some tasks tolerate missing env
+    except Exception:
+        try:
+            calls = gt()
+        except Exception:
+            return planned
+    for c in calls or []:
+        name = getattr(c, "function", None) or getattr(c, "name", None)
+        args = getattr(c, "args", None) or getattr(c, "arguments", None) or {}
+        if name:
+            planned.append({"name": str(name), "arguments": dict(args)})
+    return planned
+
+
+def _iter_suite_task_items(suite: Any) -> List[tuple]:
+    """Yield (task_id, task_obj, label) from a TaskSuite or iterable."""
+    items: List[tuple] = []
+    if suite is None:
+        return items
+
+    # Already a list/tuple of our tasks or duck-typed records.
+    if isinstance(suite, (list, tuple)):
+        for i, item in enumerate(suite):
+            items.append((str(getattr(item, "id", i)), item, "benign"))
+        return items
+
+    user_tasks = getattr(suite, "user_tasks", None)
+    if callable(user_tasks):
+        try:
+            user_tasks = user_tasks()
+        except Exception:
+            user_tasks = None
+    if isinstance(user_tasks, dict):
+        for tid, task in user_tasks.items():
+            items.append((str(tid), task, "benign"))
+    elif isinstance(user_tasks, (list, tuple)):
+        for i, task in enumerate(user_tasks):
+            items.append((str(getattr(task, "ID", i)), task, "benign"))
+
+    inj_tasks = getattr(suite, "injection_tasks", None)
+    if callable(inj_tasks):
+        try:
+            inj_tasks = inj_tasks()
+        except Exception:
+            inj_tasks = None
+    if isinstance(inj_tasks, dict):
+        for tid, task in inj_tasks.items():
+            items.append((str(tid), task, "attack"))
+    elif isinstance(inj_tasks, (list, tuple)):
+        for i, task in enumerate(inj_tasks):
+            items.append((f"injection_{i}", task, "attack"))
+
+    return items
+
+
 def load_real_agentdojo_tasks(
     suite: str,
     *,
     limit: Optional[int] = None,
+    benchmark_version: str = DEFAULT_BENCHMARK_VERSION,
 ) -> List[AgentDojoTask]:
     """
-    Best-effort bridge to upstream AgentDojo.
+    Bridge to upstream AgentDojo.
 
-    Upstream APIs evolve; this adapter looks for a suite loader and converts
-    tasks into our ``AgentDojoTask`` shape. Raises RuntimeError with install
+    Supports ``agentdojo.task_suite.load_suites.get_suite(version, name)``
+    (0.1.35+) and older top-level helpers. Raises RuntimeError with install
     hints when the package or suite is missing.
     """
-    mod = try_import_agentdojo()
-    if mod is None:
+    if try_import_agentdojo() is None:
         raise RuntimeError(
-            "AgentDojo package not installed. Install upstream AgentDojo, then re-run "
-            "with --real. CI uses --suite mock (default) without this dependency."
+            "AgentDojo package not installed. Install with: "
+            "pip install 'llm-tester[agentdojo]'  (pins agentdojo>=0.1.35,<0.2), "
+            "then re-run with --real. CI uses --suite mock without this dependency."
         )
-    # Prefer documented helpers when present; otherwise fail clearly.
-    loader = getattr(mod, "load_suite", None) or getattr(mod, "get_suite", None)
+    loader, loader_name = _resolve_get_suite()
     if loader is None:
         raise RuntimeError(
-            "Installed agentdojo package has no load_suite/get_suite helper. "
+            "Installed agentdojo package has no suite loader. Expected "
+            "agentdojo.task_suite.load_suites.get_suite (0.1.35+) or "
+            "agentdojo.get_suite / load_suite. "
             "Export tasks to mcp-sentinel-trace JSONL and use llmtest guard-eval "
-            "--dataset jsonl, or extend load_real_agentdojo_tasks for your version."
+            "--dataset jsonl if your fork differs."
         )
-    raw = loader(suite)
+
+    # Allow "v1.2.2/workspace" shorthand.
+    suite_name = suite
+    version = benchmark_version or DEFAULT_BENCHMARK_VERSION
+    if "/" in suite and not suite.startswith("mock"):
+        maybe_ver, maybe_name = suite.split("/", 1)
+        if maybe_ver.startswith("v"):
+            version, suite_name = maybe_ver, maybe_name
+
+    try:
+        raw_suite = loader(suite_name, benchmark_version=version)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load AgentDojo suite {suite_name!r} "
+            f"(version={version}) via {loader_name}: {exc}"
+        ) from exc
+
     tasks: List[AgentDojoTask] = []
-    for i, item in enumerate(raw or []):
+    for i, (tid, item, default_label) in enumerate(_iter_suite_task_items(raw_suite)):
         if limit is not None and i >= limit:
             break
         if isinstance(item, AgentDojoTask):
             tasks.append(item)
             continue
-        # Duck-type common fields.
+        if isinstance(item, dict):
+            tasks.append(
+                AgentDojoTask(
+                    id=str(item.get("id") or tid),
+                    user_request=str(
+                        item.get("user_request") or item.get("prompt") or ""
+                    ),
+                    label=str(item.get("label") or default_label),
+                    planned_calls=list(item.get("planned_calls") or []),
+                    tool_outputs=dict(item.get("tool_outputs") or {}),
+                    attack_tools=list(item.get("attack_tools") or []),
+                    utility_tools=list(item.get("utility_tools") or []),
+                    suite=suite_name,
+                    meta={
+                        "source": "agentdojo_real",
+                        "loader": loader_name,
+                        "benchmark_version": version,
+                    },
+                )
+            )
+            continue
+        prompt = _prompt_from_task(item)
+        planned = _planned_calls_from_task(item)
         tasks.append(
             AgentDojoTask(
-                id=str(getattr(item, "id", None) or item.get("id") or f"adj-{i}"),
-                user_request=str(
-                    getattr(item, "user_request", None)
-                    or getattr(item, "prompt", None)
-                    or item.get("user_request")
-                    or item.get("prompt")
-                    or ""
-                ),
-                label=str(
-                    getattr(item, "label", None) or item.get("label") or "benign"
-                ),
-                planned_calls=list(
-                    getattr(item, "planned_calls", None)
-                    or item.get("planned_calls")
-                    or []
-                ),
-                tool_outputs=dict(
-                    getattr(item, "tool_outputs", None)
-                    or item.get("tool_outputs")
-                    or {}
-                ),
-                attack_tools=list(
-                    getattr(item, "attack_tools", None)
-                    or item.get("attack_tools")
-                    or []
-                ),
-                utility_tools=list(
-                    getattr(item, "utility_tools", None)
-                    or item.get("utility_tools")
-                    or []
-                ),
-                suite=suite,
-                meta={"source": "agentdojo_real"},
+                id=str(tid),
+                user_request=prompt,
+                label=default_label,
+                planned_calls=planned,
+                tool_outputs={},
+                attack_tools=[],
+                utility_tools=[c["name"] for c in planned[:1]],
+                suite=suite_name,
+                meta={
+                    "source": "agentdojo_real",
+                    "loader": loader_name,
+                    "benchmark_version": version,
+                    "task_type": type(item).__name__,
+                },
             )
         )
     if not tasks:
-        raise RuntimeError(f"AgentDojo suite {suite!r} loaded zero tasks.")
+        raise RuntimeError(
+            f"AgentDojo suite {suite_name!r} (version={version}) loaded zero tasks "
+            f"via {loader_name}."
+        )
     return tasks
 
 
