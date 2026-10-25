@@ -9,7 +9,11 @@ from typing import Any, Dict, List, Optional
 
 from openai import APIStatusError, OpenAI, RateLimitError
 
-from llm_tester.config import RunParams, resolve_provider_config
+from llm_tester.config import (
+    DEFAULT_OLLAMA_NUM_THREAD,
+    RunParams,
+    resolve_provider_config,
+)
 
 
 @dataclass
@@ -18,6 +22,8 @@ class ChatResult:
     latency_s: float
     raw: Optional[Dict[str, Any]] = None
     attempts: int = 1
+    # Echo of sampling knobs actually sent (for S4 / Ollama determinism checks).
+    request_options: Optional[Dict[str, Any]] = None
 
 
 class LLMProvider:
@@ -47,6 +53,8 @@ class LLMProvider:
         self.backoff_max = backoff_max
         # Last chat() attempt count (incl. 429 retries) for --max-requests.
         self.last_attempts: int = 0
+        # Last request kwargs (incl. Ollama options) for tests / debugging.
+        self.last_request_kwargs: Dict[str, Any] = {}
         # Disable the SDK's own retries so we control 429 backoff centrally.
         self._client = OpenAI(
             api_key=cfg["api_key"],
@@ -61,6 +69,9 @@ class LLMProvider:
         system: Optional[str] = None,
         messages: Optional[List[Dict[str, str]]] = None,
         stop: Optional[List[str]] = None,
+        temperature: Optional[float] = None,
+        seed: Optional[int] = None,
+        num_thread: Optional[int] = None,
     ) -> ChatResult:
         if messages is None:
             messages = []
@@ -68,17 +79,44 @@ class LLMProvider:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
 
+        temp = (
+            float(temperature)
+            if temperature is not None
+            else float(self.params.temperature)
+        )
+        seed_val = seed if seed is not None else self.params.seed
+        thread_val = (
+            num_thread if num_thread is not None else self.params.num_thread
+        )
+
         kwargs: Dict[str, Any] = {
             "model": self.model,
             "messages": messages,
-            "temperature": self.params.temperature,
+            "temperature": temp,
         }
-        if self.params.seed is not None:
-            kwargs["seed"] = self.params.seed
+        if seed_val is not None:
+            kwargs["seed"] = int(seed_val)
         if self.params.max_tokens is not None:
             kwargs["max_tokens"] = self.params.max_tokens
         if stop:
             kwargs["stop"] = list(stop)
+
+        # Ollama: also push options.* so native sampling knobs are explicit
+        # (seed / temperature / num_thread). OpenAI-compat maps top-level
+        # temperature/seed, but num_thread only exists under options.
+        request_options: Dict[str, Any] = {
+            "temperature": temp,
+        }
+        if seed_val is not None:
+            request_options["seed"] = int(seed_val)
+        if self.provider == "ollama":
+            if thread_val is None and seed_val is not None:
+                thread_val = DEFAULT_OLLAMA_NUM_THREAD
+            if thread_val is not None:
+                request_options["num_thread"] = int(thread_val)
+            kwargs["extra_body"] = {"options": dict(request_options)}
+
+        self.last_request_kwargs = dict(kwargs)
 
         attempt = 0
         start = time.perf_counter()
@@ -96,6 +134,7 @@ class LLMProvider:
                     latency_s=latency,
                     raw=response.model_dump(),
                     attempts=attempt,
+                    request_options=dict(request_options),
                 )
             except (RateLimitError, APIStatusError) as exc:
                 status = getattr(exc, "status_code", None)
@@ -103,7 +142,6 @@ class LLMProvider:
                     status = getattr(exc.response, "status_code", None)
                 is_rate_limited = isinstance(exc, RateLimitError) or status == 429
                 if not is_rate_limited or attempt > self.max_retries:
-                    # Exhausted / non-429: still record attempts for budgeting.
                     self.last_attempts = attempt
                     raise
                 delay = self._backoff_seconds(attempt, exc)
