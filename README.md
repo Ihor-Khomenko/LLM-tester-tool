@@ -225,6 +225,13 @@ llmtest guard-eval --dataset jsonl --dataset-path scenarios.jsonl
 llmtest guard-eval --dataset jsonl \
   --dataset-path llm_tester/data/agent/msr_schema10_examples.jsonl
 
+# Explicit importer: MSR sim export → v1 with T0/T1/T2 checkpoint metadata
+llmtest import-mcp-sim \
+  --input llm_tester/data/agent/mcp_sim_import_fixture.jsonl \
+  --out /tmp/mcp_sim_v1.jsonl
+# Or from a local checkout: --research-root ../mcp-security-research
+# Mapping docs: docs/import-mcp-sim.md
+
 # Optional S3/S4 via any provider (not used in CI)
 llmtest guard-eval --dataset synthetic --enable-s4 \
   --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free
