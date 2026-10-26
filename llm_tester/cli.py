@@ -250,7 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
     ge.add_argument(
         "--enable-s4",
         action="store_true",
-        help="Enable S4 LLM judge (grey zone); needs --provider",
+        help="Enable S4 LLM judge (grey zone); needs --provider or --s4-mock",
+    )
+    ge.add_argument(
+        "--s4-mock",
+        action="store_true",
+        help=(
+            "Use offline MockS4Chat judge for the S4 path (CI; no network). "
+            "Implies enable_s4=True."
+        ),
     )
     ge.add_argument(
         "--json",
@@ -349,6 +357,12 @@ def build_parser() -> argparse.ArgumentParser:
     be.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     be.add_argument("--seed", type=int, default=DEFAULT_SEED)
     be.add_argument("--no-seed", action="store_true")
+    be.add_argument(
+        "--num-thread",
+        type=int,
+        default=None,
+        help="Ollama options.num_thread (default 1 when --seed is set); recorded in manifest",
+    )
     add_run_dir_args(be, default_name_help="baselines-eval_<baseline>_<dataset>")
 
     adj = sub.add_parser(
@@ -413,6 +427,12 @@ def build_parser() -> argparse.ArgumentParser:
     adj.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
     adj.add_argument("--seed", type=int, default=DEFAULT_SEED)
     adj.add_argument("--no-seed", action="store_true")
+    adj.add_argument(
+        "--num-thread",
+        type=int,
+        default=None,
+        help="Ollama options.num_thread (default 1 when --seed is set); recorded in manifest",
+    )
     add_run_dir_args(adj, default_name_help="agentdojo_<suite>_<defense>")
 
     abl = sub.add_parser(
@@ -655,6 +675,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Output mcp-sentinel-trace JSONL path",
     )
+    gzr.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "Exit non-zero when the filter matches no S4/escalated decisions "
+            "(default: warn loudly on stderr but still write an empty JSONL)"
+        ),
+    )
     gzr.add_argument("--json", action="store_true", help="Print manifest JSON")
 
     sp = sub.add_parser(
@@ -793,23 +821,25 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
     if args.s3_backend:
         policy.s3_backend = args.s3_backend
 
+    use_s4_mock = bool(getattr(args, "s4_mock", False))
     want_llm = (
         args.only_s4
         or args.enable_s4
+        or use_s4_mock
         or (args.s3_backend == "llm")
         or (policy.s3_backend == "llm")
     )
-    if args.only_s4 or args.enable_s4:
+    if args.only_s4 or args.enable_s4 or use_s4_mock:
         policy.enable_s4 = True
     elif not args.only_s4:
         # Default offline path: no S4 unless explicitly enabled.
-        if not args.enable_s4:
+        if not args.enable_s4 and not use_s4_mock:
             policy.enable_s4 = False
 
-    if want_llm and not args.provider:
+    if want_llm and not args.provider and not use_s4_mock:
         print(
             "Warning: S3/S4 LLM backend requested but --provider not set; "
-            "falling back to lite S3 / no S4.",
+            "falling back to lite S3 / no S4. Pass --s4-mock for offline S4.",
             file=sys.stderr,
         )
         if policy.s3_backend == "llm":
@@ -826,6 +856,8 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         abl.append("-S3")
     if args.only_s4:
         abl.append("only-S4")
+    if use_s4_mock:
+        abl.append("s4-mock")
     abl_slug = "".join(abl) if abl else "full"
 
     repeats = max(1, int(getattr(args, "repeats", 1) or 1))
@@ -847,7 +879,11 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         if base_seed is not None and stride:
             seed_i = int(base_seed) + i * stride
         llm = None
-        if want_llm and args.provider:
+        if use_s4_mock:
+            from llm_tester.agent.s4_mock import MockS4Chat
+
+            llm = MockS4Chat(seed=seed_i if seed_i is not None else 42)
+        elif want_llm and args.provider:
             llm = build_llm_chat(
                 args.provider,
                 args.model,
@@ -909,9 +945,10 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         "no_s4": args.no_s4,
         "only_s4": args.only_s4,
         "enable_s4": bool(policy.enable_s4),
+        "s4_mock": use_s4_mock,
         "s3_backend": policy.s3_backend,
-        "provider": args.provider,
-        "model": args.model,
+        "provider": "mock-s4" if use_s4_mock else args.provider,
+        "model": "mock-s4" if use_s4_mock else args.model,
         "base_url": args.base_url,
         "temperature": args.temperature,
         "seed": base_seed,
@@ -937,8 +974,8 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
         config=config,
         metrics=metrics_dict,
         argv=sys.argv[1:],
-        provider=args.provider,
-        model=args.model,
+        provider=("mock-s4" if use_s4_mock else args.provider),
+        model=("mock-s4" if use_s4_mock else args.model),
         extra_sha=parse_extra_sha(args.extra_sha),
     )
     print(f"Run artefacts written to {run_dir}")
@@ -967,7 +1004,7 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_grey_zone_rebuild(args: argparse.Namespace) -> int:
-    from llm_tester.agent.grey_zone import rebuild_grey_zone_subset
+    from llm_tester.agent.grey_zone import EmptyGreyZoneError, rebuild_grey_zone_subset
     from llm_tester.agent.traces import TraceSchemaError, resolve_traces
 
     try:
@@ -993,7 +1030,11 @@ def cmd_grey_zone_rebuild(args: argparse.Namespace) -> int:
             traces,
             out_path=args.out,
             filter_mode=args.filter,
+            strict=bool(getattr(args, "strict", False)),
         )
+    except EmptyGreyZoneError as exc:
+        print(f"grey-zone-rebuild failed (strict): {exc}", file=sys.stderr)
+        return 3
     except Exception as exc:
         print(f"grey-zone-rebuild failed: {exc}", file=sys.stderr)
         return 1
@@ -1006,6 +1047,11 @@ def cmd_grey_zone_rebuild(args: argparse.Namespace) -> int:
             f"(filter={manifest['filter']}; source={manifest['source_run']})"
         )
         print(f"Manifest: {manifest.get('manifest_path')}")
+        if manifest.get("empty"):
+            print(
+                "Note: empty grey-zone subset — see WARNING on stderr.",
+                file=sys.stderr,
+            )
     return 0
 
 
@@ -1029,6 +1075,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
             temperature=args.temperature,
             seed=None if args.no_seed else args.seed,
             max_retries=args.max_retries,
+            num_thread=getattr(args, "num_thread", None),
         )
 
     if args.real:
@@ -1100,6 +1147,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
         "sample_seed": None if args.no_seed else args.seed,
         "provider": provider_name or ("mock" if args.real else None),
         "model": args.model,
+        "num_thread": getattr(args, "num_thread", None),
         "attack": getattr(args, "attack", None) if args.real else None,
         "benchmark_version": args.benchmark_version if args.real else None,
     }
@@ -1162,6 +1210,7 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
             temperature=args.temperature,
             seed=None if args.no_seed else args.seed,
             max_retries=args.max_retries,
+            num_thread=getattr(args, "num_thread", None),
         )
     elif args.baseline == "task_shield":
         print(
@@ -1218,6 +1267,7 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
         "prompt_guard_threshold": args.prompt_guard_threshold,
         "provider": args.provider,
         "model": args.model,
+        "num_thread": getattr(args, "num_thread", None),
         "baseline_available": bool(getattr(guard, "available", True)),
         "skip_reason": getattr(guard, "skip_reason", None),
         "errors": metrics.n_errors,
