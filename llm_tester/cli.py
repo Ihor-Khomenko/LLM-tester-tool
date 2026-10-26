@@ -1,6 +1,7 @@
 """Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
 ``baselines-eval``, ``agentdojo``, ``ablation``, ``guard-calibrate``,
-``grey-zone-rebuild``, ``agent-bench``, ``index``, ``compare``, ``figures``.
+``grey-zone-rebuild``, ``import-mcp-sim``, ``agent-bench``, ``index``,
+``compare``, ``figures``.
 """
 
 from __future__ import annotations
@@ -685,6 +686,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gzr.add_argument("--json", action="store_true", help="Print manifest JSON")
 
+    ims = sub.add_parser(
+        "import-mcp-sim",
+        help=(
+            "Convert mcp-security-research scenario export (schema 1.0) into "
+            "mcp-sentinel-trace/v1 JSONL for guard-eval (T0/T1/T2 mapping)"
+        ),
+    )
+    ims.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="MSR schema 1.0 JSONL (from python -m scenarios.export)",
+    )
+    ims.add_argument(
+        "--research-root",
+        type=Path,
+        default=None,
+        help=(
+            "Local mcp-security-research checkout; runs python -m scenarios.export "
+            "then converts (overrides --input)"
+        ),
+    )
+    ims.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output mcp-sentinel-trace/v1 JSONL path",
+    )
+    ims.add_argument(
+        "--id",
+        action="append",
+        dest="scenario_ids",
+        default=None,
+        help="Restrict to scenario id(s) (repeatable)",
+    )
+    ims.add_argument("--lang", choices=["en", "uk"], default="en")
+    ims.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Optional import manifest path (default: <out>_import_manifest.json)",
+    )
+    ims.add_argument("--json", action="store_true", help="Print import manifest JSON")
+
     sp = sub.add_parser(
         "sentinel-proxy",
         help="Run MCP stdio JSON-RPC proxy wrapping a backend MCP server",
@@ -1053,6 +1098,46 @@ def cmd_grey_zone_rebuild(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     return 0
+
+
+def cmd_import_mcp_sim(args: argparse.Namespace) -> int:
+    from llm_tester.agent.import_mcp_sim import import_mcp_sim
+
+    if args.research_root is None and args.input is None:
+        print(
+            "import-mcp-sim requires --input JSONL or --research-root "
+            "(mcp-security-research checkout).",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        manifest = import_mcp_sim(
+            input_path=args.input,
+            research_root=args.research_root,
+            out_path=args.out,
+            lang=args.lang,
+            scenario_ids=args.scenario_ids,
+            manifest_path=args.manifest,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError) as exc:
+        print(f"import-mcp-sim failed: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(manifest, indent=2))
+    else:
+        print(
+            f"Wrote {manifest['n_written']} v1 traces to {manifest['out_path']} "
+            f"(attack={manifest['n_attack']}, benign={manifest['n_benign']}; "
+            f"T0={manifest['by_checkpoint']['T0']}, "
+            f"T1={manifest['by_checkpoint']['T1']}, "
+            f"T2={manifest['by_checkpoint']['T2']})"
+        )
+        print(f"Manifest: {manifest.get('manifest_path')}")
+    return 0 if manifest.get("n_written", 0) > 0 else 3
 
 
 def cmd_agentdojo(args: argparse.Namespace) -> int:
@@ -1929,6 +2014,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_guard_calibrate(args)
     if args.command == "grey-zone-rebuild":
         return cmd_grey_zone_rebuild(args)
+    if args.command == "import-mcp-sim":
+        return cmd_import_mcp_sim(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
     if args.command == "sentinel-proxy":

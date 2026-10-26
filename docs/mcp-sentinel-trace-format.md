@@ -23,6 +23,16 @@ Native export fields: `attack_class`, `trace[]` with events
 (optional `attack_step` on malicious calls). Mapped to `attack_type`, `tools`,
 `tools_after`, `tool_outputs`, `call` as in the pilot `convert_mcpsr.py`.
 
+**Explicit importer (preferred for paper pipelines):**
+
+```sh
+llmtest import-mcp-sim --input path/to/msr_schema10.jsonl --out cases_v1.jsonl
+```
+
+See [`docs/import-mcp-sim.md`](import-mcp-sim.md) for the T0/T1/T2 mapping
+(`tools*` → T0, `tool_result` / injection source → T1, `tool_call`+args → T2)
+and `meta.checkpoints` annotations.
+
 ## Required / core fields
 
 | Field | Type | Description |
@@ -85,7 +95,13 @@ Aliases accepted by the loader (for parallel exporters): `user_task`/`user_promp
 ## CLI
 
 ```sh
-# Evaluate an export from mcp-security-research
+# Import MSR schema 1.0 → v1 (with checkpoint metadata), then evaluate
+llmtest import-mcp-sim \
+  --input llm_tester/data/agent/mcp_sim_import_fixture.jsonl \
+  --out /tmp/mcp_sim_v1.jsonl
+llmtest guard-eval --dataset jsonl --dataset-path /tmp/mcp_sim_v1.jsonl
+
+# Or evaluate an export directly (auto-converts 1.0 on load)
 llmtest guard-eval --dataset jsonl --dataset-path path/to/scenarios.jsonl
 
 # Bundled miniature examples

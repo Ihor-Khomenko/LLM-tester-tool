@@ -6,6 +6,14 @@ Native export shape (see convert_mcpsr.py from the pilot)::
     {"schema_version": "1.0", "id": "...", "attack_class": "...",
      "trace": [{"event": "user_message"|"tools_listed"|"tools_mutated"|
                          "tool_result"|"tool_call", ...}, ...]}
+
+Checkpoint mapping used by ``llmtest import-mcp-sim`` / ``annotate_checkpoints``:
+
+* **T0** — tool schemas at registration (``tools_listed`` / ``tools``, plus
+  ``tools_mutated`` / ``tools_after`` for rug-pull)
+* **T1** — untrusted tool outputs (``tool_result``); the first untrusted /
+  payload-bearing result is the **injection source**
+* **T2** — planned tool calls (``tool_call`` + arguments; prefer ``attack_step``)
 """
 
 from __future__ import annotations
@@ -27,6 +35,9 @@ ATTACK_CLASS_MAP = {
     "benign": "benign",
     "direct_harm": "direct_harm",
     "data_exfiltration": "data_exfiltration",
+    "malicious_write": "direct_harm",
+    "guard_prefix_bypass": "other",
+    "judge_evasion": "other",
 }
 
 
@@ -87,13 +98,13 @@ def convert_mcpsr_record(data: Dict[str, Any], *, default_id: str = "") -> Dict[
     if not isinstance(tools_raw, list):
         tools_raw = []
 
+    result_events = [e for e in trace if e.get("event") == "tool_result"]
     outs = [
         {
             "source": str(e.get("tool_name") or e.get("name") or "tool"),
             "content": str(e.get("content") or e.get("text") or ""),
         }
-        for e in trace
-        if e.get("event") == "tool_result"
+        for e in result_events
     ]
 
     calls = [e for e in trace if e.get("event") == "tool_call"]
@@ -107,7 +118,37 @@ def convert_mcpsr_record(data: Dict[str, Any], *, default_id: str = "") -> Dict[
 
     attack_class = str(data.get("attack_class") or "other")
     attack_type = ATTACK_CLASS_MAP.get(attack_class, "other")
-    label = str(data.get("label") or ("benign" if attack_type == "benign" else "attack"))
+    labels = data.get("labels") if isinstance(data.get("labels"), dict) else {}
+    # Prefer explicit label / labels.guard_should_block → attack vs benign.
+    if data.get("label"):
+        label = str(data.get("label"))
+    elif attack_type == "benign":
+        label = "benign"
+    elif labels.get("guard_should_block") is False and attack_class in (
+        "benign",
+        "judge_evasion",
+    ):
+        # Catalog "benign framing" attacks still label as attack for eval.
+        label = "attack"
+    else:
+        label = "attack"
+    label = "benign" if str(label).lower() in ("benign", "safe", "clean") else "attack"
+
+    # Injection source: first untrusted / payload-bearing tool_result.
+    injection_source: Optional[Dict[str, Any]] = None
+    for e in result_events:
+        content = str(e.get("content") or e.get("text") or "")
+        untrusted = bool(e.get("untrusted")) or bool(e.get("payload_file"))
+        if untrusted or content:
+            injection_source = {
+                "tool": str(e.get("tool_name") or e.get("name") or "tool"),
+                "content_preview": content[:240],
+                "untrusted": bool(e.get("untrusted", True)),
+                "payload_file": e.get("payload_file"),
+                "checkpoint": "T1",
+            }
+            if untrusted or attack_type == "indirect_injection":
+                break
 
     rec: Dict[str, Any] = {
         "schema_version": TARGET_SCHEMA,
@@ -130,8 +171,11 @@ def convert_mcpsr_record(data: Dict[str, Any], *, default_id: str = "") -> Dict[
             "attack_class": attack_class,
             "n_calls": len(calls),
             "converted_from": str(data.get("schema_version") or "1.0"),
+            "guard_should_block": labels.get("guard_should_block"),
         },
     }
+    if injection_source is not None:
+        rec["meta"]["injection_source"] = injection_source
     if mutated:
         mut_tools = mutated[0].get("tools") or []
         rec["tools_after"] = [
@@ -139,9 +183,79 @@ def convert_mcpsr_record(data: Dict[str, Any], *, default_id: str = "") -> Dict[
             for t in mut_tools
             if isinstance(t, dict) and t.get("name")
         ]
+    elif isinstance(data.get("tools_after"), list) and data.get("tools_after"):
+        rec["tools_after"] = [
+            {
+                "name": t.get("name"),
+                "description": t.get("description", ""),
+                "input_schema": t.get("parameters", t.get("input_schema", {})),
+            }
+            for t in data["tools_after"]
+            if isinstance(t, dict) and t.get("name")
+        ]
     if call_ev:
         rec["call"] = {
             "name": str(call_ev.get("tool_name") or call_ev.get("name") or ""),
             "arguments": dict(call_ev.get("arguments") or call_ev.get("args") or {}),
         }
-    return rec
+        rec["meta"]["call_arguments"] = dict(rec["call"]["arguments"])
+        rec["meta"]["call_attack_step"] = bool(call_ev.get("attack_step"))
+    return annotate_checkpoints(rec, source_record=data)
+
+
+def annotate_checkpoints(
+    case: Dict[str, Any],
+    *,
+    source_record: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Attach ``meta.checkpoints`` describing which Sentinel hooks the case hits.
+
+    Idempotent: safe to call on already-converted v1 cases.
+    """
+    out = dict(case)
+    meta = dict(out.get("meta") or {})
+    tools = out.get("tools") or []
+    tools_after = out.get("tools_after") or []
+    outputs = out.get("tool_outputs") or []
+    call = out.get("call")
+
+    t0_events: List[str] = []
+    if tools:
+        t0_events.append("tools_listed→check_tool_registration")
+    if tools_after:
+        t0_events.append("tools_mutated→check_tool_registration(tools_after)")
+
+    t1_events: List[str] = []
+    if outputs:
+        src = (meta.get("injection_source") or {}).get("tool") or "tool"
+        t1_events.append(f"tool_result[{src}]→on_tool_output")
+
+    t2_events: List[str] = []
+    if isinstance(call, dict) and call.get("name"):
+        args = call.get("arguments") or {}
+        t2_events.append(
+            f"tool_call[{call.get('name')}](args={sorted(args.keys())})→check_tool_call"
+        )
+
+    # Fall back to source trace events when v1 fields are sparse.
+    if source_record and isinstance(source_record.get("trace"), list):
+        events = {str(e.get("event")) for e in source_record["trace"] if isinstance(e, dict)}
+        if "tools_listed" in events and not t0_events:
+            t0_events.append("tools_listed→check_tool_registration")
+        if "tools_mutated" in events and "tools_mutated→check_tool_registration(tools_after)" not in t0_events:
+            t0_events.append("tools_mutated→check_tool_registration(tools_after)")
+        if "tool_result" in events and not t1_events:
+            t1_events.append("tool_result→on_tool_output")
+        if "tool_call" in events and not t2_events:
+            t2_events.append("tool_call→check_tool_call")
+
+    meta["checkpoints"] = {
+        "T0": t0_events,
+        "T1": t1_events,
+        "T2": t2_events,
+        "exercised": [k for k, v in (("T0", t0_events), ("T1", t1_events), ("T2", t2_events)) if v],
+    }
+    out["meta"] = meta
+    out["schema_version"] = out.get("schema_version") or TARGET_SCHEMA
+    return out
