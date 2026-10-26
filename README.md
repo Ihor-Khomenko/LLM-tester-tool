@@ -278,16 +278,37 @@ llmtest agent-bench --provider ollama --model qwen2.5:7b --without-guard \
 
 `--max-retries` defaults to **1** (avoid burning free-tier quota on 429). stderr logs `provider_requests_used`. Suites: `builtin` (benign+attack), `msr`/`jsonl`, `injecagent`, `agentdojo` (scaffold).
 
-### MCP stdio proxy
+### MCP Sentinel proxy
 
-JSON-RPC line relay that wraps a real MCP server command, intercepting `tools/list` and `tools/call`. Uses optional `mcp` package env hygiene when installed; core relay is dependency-free:
+Transparent MCP proxy between a client and a real MCP server. Applies the
+Sentinel cascade at **T0** (`tools/list`), **T2** (`tools/call` request), and
+**T1** (tool output) with **block / sanitize / allow**. Writes a JSONL audit
+log (action + `overhead_ms`). Config YAML sets `threshold` (default **0.7**)
+and optional S4 (`enable_s4: false` by default).
+
+**stdio (default)** — point your MCP host at this process instead of the backend:
 
 ```sh
-llmtest sentinel-proxy --policy llm_tester/data/sentinel/policy.default.yaml --log sentinel.jsonl -- \
-  npx -y @modelcontextprotocol/server-filesystem /tmp
+# Filesystem MCP example
+llmtest sentinel-proxy \
+  --config llm_tester/data/sentinel/proxy.default.yaml \
+  --audit-log /tmp/sentinel_audit.jsonl \
+  --user-task "List and read files under /tmp/vault only" \
+  -- \
+  npx -y @modelcontextprotocol/server-filesystem /tmp/vault
 ```
 
-Scope: stdio JSON-RPC proxy (not a full FastMCP re-implementation). Hosts that speak MCP over stdio can point at this process instead of the backend server.
+**Optional HTTP** JSON-RPC front-end (same hooks; one POST per message):
+
+```sh
+llmtest sentinel-proxy --transport http --listen 127.0.0.1:8765 \
+  --threshold 0.7 --audit-log /tmp/sentinel_audit.jsonl -- \
+  npx -y @modelcontextprotocol/server-filesystem /tmp/vault
+```
+
+Default proxy config: `llm_tester/data/sentinel/proxy.default.yaml`. Core relay
+is dependency-free; optional `mcp` package improves stdio env hygiene. Not a
+full FastMCP re-implementation.
 
 ### Policy
 
