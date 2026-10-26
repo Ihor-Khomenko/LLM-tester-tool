@@ -22,7 +22,7 @@ from llm_tester.agent.traces import TraceStep, load_synthetic_traces
 from llm_tester.artifacts.run_dir import finalize_run_dir, load_metrics, open_results_writer
 from llm_tester.cli import main
 from llm_tester.sentinel.guard import SentinelGuard
-from llm_tester.sentinel.mocks import MockS4Chat
+from llm_tester.agent.s4_mock import MockS4Chat
 from llm_tester.sentinel.policy import SentinelPolicy
 from llm_tester.sentinel.stages.judge import JudgeStage
 from llm_tester.sentinel.types import StageScore, ToolCall

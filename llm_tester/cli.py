@@ -880,7 +880,7 @@ def cmd_guard_eval(args: argparse.Namespace) -> int:
             seed_i = int(base_seed) + i * stride
         llm = None
         if use_s4_mock:
-            from llm_tester.sentinel.mocks import MockS4Chat
+            from llm_tester.agent.s4_mock import MockS4Chat
 
             llm = MockS4Chat(seed=seed_i if seed_i is not None else 42)
         elif want_llm and args.provider:
