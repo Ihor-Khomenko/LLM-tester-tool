@@ -1,0 +1,24 @@
+# MCP-Sentinel proxy config (stdio by default; optional HTTP).
+# Thresholds mirror SentinelPolicy; ``threshold`` sets tau_high (block line).
+
+threshold: 0.7
+tau_low: 0.25
+
+# Optional S4 LLM judge (off by default — no live API in CI).
+enable_s4: false
+# s4_provider: ollama
+# s4_model: llama-guard3:1b
+
+# Trusted user task for provenance (also settable via --user-task).
+user_task: ""
+
+# JSONL audit log (block / sanitize / allow + latency). Null → decisions only
+# via policy.log_path / --audit-log CLI flag.
+audit_log: null
+
+# Optional full Sentinel policy YAML (stage toggles, sinks, …).
+# When set, threshold / tau_low / enable_s4 still override matching keys.
+# policy: llm_tester/data/sentinel/policy.default.yaml
+
+transport: stdio   # stdio | http
+# listen: 127.0.0.1:8765   # for transport: http

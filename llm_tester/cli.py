@@ -732,15 +732,59 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "sentinel-proxy",
-        help="Run MCP stdio JSON-RPC proxy wrapping a backend MCP server",
+        help=(
+            "Transparent MCP proxy (stdio JSON-RPC; optional HTTP) applying "
+            "Sentinel T0/T1/T2 with block/sanitize/allow + JSONL audit"
+        ),
     )
-    sp.add_argument("--policy", type=Path, default=None)
-    sp.add_argument("--log", type=Path, default=None)
-    sp.add_argument("--user-task", default="")
+    sp.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Proxy YAML (threshold default 0.7; enable_s4; audit_log; transport)",
+    )
+    sp.add_argument("--policy", type=Path, default=None, help="Full Sentinel policy YAML")
+    sp.add_argument("--log", type=Path, default=None, help="Decision / audit JSONL path")
+    sp.add_argument(
+        "--audit-log",
+        type=Path,
+        default=None,
+        help="JSONL audit log (T0/T1/T2 actions + latency)",
+    )
+    sp.add_argument("--user-task", default="", help="Trusted user task for provenance")
+    sp.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Block threshold tau_high (default 0.7)",
+    )
+    sp.add_argument(
+        "--enable-s4",
+        action="store_true",
+        help="Optional S4 judge (needs --provider; off by default)",
+    )
+    sp.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="LLM provider for optional S4",
+    )
+    sp.add_argument("--model", default=None, help="S4 model id")
+    sp.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default=None,
+        help="stdio (default) or http JSON-RPC front-end",
+    )
+    sp.add_argument(
+        "--listen",
+        default=None,
+        help="host:port for --transport http (default 127.0.0.1:8765)",
+    )
     sp.add_argument(
         "command",
         nargs=argparse.REMAINDER,
-        help="Backend command after --",
+        help="Backend MCP server command after --",
     )
 
     idx = sub.add_parser(
@@ -1757,12 +1801,28 @@ def cmd_sentinel_proxy(args: argparse.Namespace) -> int:
     from llm_tester.sentinel.proxy import main as proxy_main
 
     argv: List[str] = []
+    if getattr(args, "config", None):
+        argv.extend(["--config", str(args.config)])
     if args.policy:
         argv.extend(["--policy", str(args.policy)])
     if args.log:
         argv.extend(["--log", str(args.log)])
+    if getattr(args, "audit_log", None):
+        argv.extend(["--audit-log", str(args.audit_log)])
     if args.user_task:
         argv.extend(["--user-task", args.user_task])
+    if getattr(args, "threshold", None) is not None:
+        argv.extend(["--threshold", str(args.threshold)])
+    if getattr(args, "enable_s4", False):
+        argv.append("--enable-s4")
+    if getattr(args, "provider", None):
+        argv.extend(["--provider", args.provider])
+    if getattr(args, "model", None):
+        argv.extend(["--model", args.model])
+    if getattr(args, "transport", None):
+        argv.extend(["--transport", args.transport])
+    if getattr(args, "listen", None):
+        argv.extend(["--listen", args.listen])
     argv.extend(args.command)
     return proxy_main(argv)
 
