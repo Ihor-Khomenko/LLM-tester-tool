@@ -1824,7 +1824,13 @@ def cmd_sentinel_proxy(args: argparse.Namespace) -> int:
     if getattr(args, "listen", None):
         argv.extend(["--listen", args.listen])
     argv.extend(args.command)
-    return proxy_main(argv)
+
+    llm = None
+    if getattr(args, "enable_s4", False) and getattr(args, "provider", None):
+        from llm_tester.agent.provider_adapter import build_llm_chat
+
+        llm = build_llm_chat(args.provider, args.model)
+    return proxy_main(argv, llm_provider=llm)
 
 
 def cmd_run(args: argparse.Namespace) -> int:

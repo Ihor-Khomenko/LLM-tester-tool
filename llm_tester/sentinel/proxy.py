@@ -575,7 +575,15 @@ def _parse_listen(listen: str) -> Tuple[str, int]:
     return "127.0.0.1", int(listen)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(
+    argv: Optional[List[str]] = None,
+    *,
+    llm_provider: Any = None,
+) -> int:
+    """
+    CLI entry. Optional ``llm_provider`` is injected by the host CLI when
+    ``--enable-s4`` is set — Sentinel never imports host provider adapters.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
     cmd = list(args.command)
@@ -615,14 +623,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             "@modelcontextprotocol/server-filesystem /tmp"
         )
 
-    llm = None
-    if cfg.enable_s4 and cfg.s4_provider:
-        from llm_tester.agent.provider_adapter import build_llm_chat
-
-        llm = build_llm_chat(cfg.s4_provider, cfg.s4_model)
+    if cfg.enable_s4 and llm_provider is None and cfg.s4_provider:
+        print(
+            "Warning: enable_s4 set but no llm_provider injected; "
+            "S4 will be unavailable (pass provider via llmtest CLI).",
+            file=sys.stderr,
+        )
 
     guard = build_guard_from_proxy_config(
-        cfg, log_path=Path(args.log) if args.log else None, llm_provider=llm
+        cfg,
+        log_path=Path(args.log) if args.log else None,
+        llm_provider=llm_provider,
     )
     audit_logger = AuditLogger(Path(cfg.audit_log) if cfg.audit_log else None)
     proxy = SentinelProxy(
