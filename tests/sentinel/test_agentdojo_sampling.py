@@ -75,9 +75,14 @@ def test_mock_suite_metrics_include_llm_and_overhead():
     m = summary.to_metrics()
     assert "llm_calls_total" in m
     assert "llm_calls_per_task" in m
+    assert "defense_llm_calls_total" in m
+    assert "agent_llm_calls_total" in m
     assert "defense_overhead_mean_ms" in m
     assert m["llm_calls_total"] >= 0
+    assert m["llm_calls_total"] == m["defense_llm_calls_total"]
     assert all("llm_calls" in r.to_dict() for r in results)
+    assert all("defense_llm_calls" in r.to_dict() for r in results)
+    assert all("agent_llm_calls" in r.to_dict() for r in results)
     assert all("defense_overhead_ms" in r.to_dict() for r in results)
 
 

@@ -228,6 +228,19 @@ llmtest guard-eval --dataset jsonl \
 # Optional S3/S4 via any provider (not used in CI)
 llmtest guard-eval --dataset synthetic --enable-s4 \
   --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free
+
+# Offline S4 path for CI (deterministic MockS4Chat; no network)
+llmtest guard-eval --dataset synthetic --s4-mock
+
+# Ollama determinism: pin options.num_thread (recorded in run config/manifest)
+llmtest guard-eval --dataset synthetic --enable-s4 \
+  --provider ollama --model qwen2.5:3b --seed 0 --num-thread 1
+
+# Rebuild an S4 grey-zone JSONL from a prior run (warns if empty; --strict → exit 3)
+llmtest grey-zone-rebuild --from-run runs/<prior> --dataset synthetic \
+  --filter escalated --out grey_zone.jsonl
+llmtest grey-zone-rebuild --from-run runs/<prior> --dataset synthetic \
+  --filter escalated --out grey_zone.jsonl --strict
 ```
 
 # Calibrate tau_low/tau_high on a train split; evaluate held-out (split recorded in --out)
@@ -237,6 +250,8 @@ llmtest guard-calibrate --dataset synthetic --split-by attack_type \
 Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`, plus auto-adapter for research export `1.0`). Unknown schemas fail loudly. Metrics report **symmetric** any-intervention (block|ask_user|sanitize) and block-only TPR/FPR. Risk uses noisy-OR over enabled stages (ablations are monotone).
 
 Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95 into `metrics.json` + `results.jsonl.gz`. Numbers from a run are **measured preliminary results**, not published claims.
+
+AgentDojo results (`llmtest agentdojo`) count **agent** vs **defense** LLM calls separately (`agent_llm_calls_*`, `defense_llm_calls_*`); legacy `llm_calls_*` remain defense-only for back-compat. `--num-thread` is also recorded on `agentdojo` / `baselines-eval` manifests.
 
 ### Agent bench scaffold
 

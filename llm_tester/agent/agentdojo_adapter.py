@@ -193,7 +193,10 @@ class AgentDojoCaseResult:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     latency_ms: float = 0.0
+    # Back-compat: llm_calls == defense_llm_calls (defense path only).
     llm_calls: int = 0
+    defense_llm_calls: int = 0
+    agent_llm_calls: int = 0
     defense_overhead_ms: float = 0.0
     meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -224,7 +227,10 @@ class AgentDojoSummary:
     utility_under_attack_successes: int = 0
     attack_successes: int = 0
     blocked: int = 0
+    # Back-compat: llm_calls_total == defense_llm_calls_total.
     llm_calls_total: int = 0
+    defense_llm_calls_total: int = 0
+    agent_llm_calls_total: int = 0
     latencies_ms: List[float] = field(default_factory=list)
     defense_overheads_ms: List[float] = field(default_factory=list)
     sample_seed: Optional[int] = None
@@ -252,6 +258,14 @@ class AgentDojoSummary:
         return (self.llm_calls_total / self.n) if self.n else None
 
     @property
+    def defense_llm_calls_per_task(self) -> Optional[float]:
+        return (self.defense_llm_calls_total / self.n) if self.n else None
+
+    @property
+    def agent_llm_calls_per_task(self) -> Optional[float]:
+        return (self.agent_llm_calls_total / self.n) if self.n else None
+
+    @property
     def defense_overhead_mean_ms(self) -> Optional[float]:
         return (
             statistics.mean(self.defense_overheads_ms)
@@ -272,8 +286,13 @@ class AgentDojoSummary:
             "utility_successes": self.utility_successes,
             "utility_under_attack_successes": self.utility_under_attack_successes,
             "attack_successes": self.attack_successes,
+            # Back-compat: llm_calls_* remain defense-only totals.
             "llm_calls_total": self.llm_calls_total,
             "llm_calls_per_task": self.llm_calls_per_task,
+            "defense_llm_calls_total": self.defense_llm_calls_total,
+            "defense_llm_calls_per_task": self.defense_llm_calls_per_task,
+            "agent_llm_calls_total": self.agent_llm_calls_total,
+            "agent_llm_calls_per_task": self.agent_llm_calls_per_task,
             "defense_overhead_mean_ms": self.defense_overhead_mean_ms,
             "defense_overhead_p50_ms": _percentile(self.defense_overheads_ms, 50),
             "defense_overhead_p95_ms": _percentile(self.defense_overheads_ms, 95),
@@ -633,6 +652,8 @@ def _make_scripted_llm(apis: dict) -> Any:
             self._compromised: bool = False
             self._injection_task: Any = None
             self._phase: str = "tools"  # tools → final
+            self.llm_calls: int = 0
+            self._case_calls: int = 0
 
         def configure(
             self,
@@ -645,6 +666,14 @@ def _make_scripted_llm(apis: dict) -> Any:
             self._injection_task = injection_task
             self._compromised = bool(compromised)
             self._phase = "tools"
+            self._case_calls = 0
+
+        def reset_case_calls(self) -> None:
+            self._case_calls = 0
+
+        @property
+        def case_llm_calls(self) -> int:
+            return int(self._case_calls)
 
         def query(
             self,
@@ -654,6 +683,8 @@ def _make_scripted_llm(apis: dict) -> Any:
             messages: Sequence = (),
             extra_args: dict = {},
         ):
+            self.llm_calls += 1
+            self._case_calls += 1
             if self._phase == "tools":
                 task = (
                     self._injection_task
@@ -686,6 +717,41 @@ def _make_scripted_llm(apis: dict) -> Any:
             return query, runtime, env, [*messages, msg], extra_args
 
     return ScriptedGroundTruthLLM()
+
+
+def _wrap_counting_llm(apis: dict, inner: Any) -> Any:
+    """Wrap a live AgentDojo LLM element to count agent-side query() calls."""
+
+    BasePipelineElement = apis["BasePipelineElement"]
+
+    class CountingLLM(BasePipelineElement):
+        name = getattr(inner, "name", None) or "counted-llm"
+
+        def __init__(self) -> None:
+            self.inner = inner
+            self.llm_calls = 0
+            self._case_calls = 0
+
+        def reset_case_calls(self) -> None:
+            self._case_calls = 0
+
+        @property
+        def case_llm_calls(self) -> int:
+            return int(self._case_calls)
+
+        def query(
+            self,
+            query: str,
+            runtime: Any,
+            env: Any = None,
+            messages: Sequence = (),
+            extra_args: dict = {},
+        ):
+            self.llm_calls += 1
+            self._case_calls += 1
+            return self.inner.query(query, runtime, env, messages, extra_args)
+
+    return CountingLLM()
 
 
 def _make_guarded_executor(apis: dict, defense: Any, defense_name: str) -> Any:
@@ -855,6 +921,8 @@ def build_agentdojo_llm(
 
     ``provider_name`` of ``None`` / ``mock`` → scripted ground-truth LLM (CI).
     Otherwise wrap an OpenAI-compatible client (Ollama, OpenRouter, …).
+    Live LLMs are wrapped with :func:`_wrap_counting_llm` so agent-side
+    ``query()`` calls are counted separately from defense LLM calls.
     """
     apis = _require_agentdojo_pipeline()
     name = (provider_name or "mock").lower().strip()
@@ -870,9 +938,9 @@ def build_agentdojo_llm(
     if client is None:
         raise RuntimeError("LLM provider has no OpenAI-compatible _client")
     model_id = model or getattr(llm_provider, "model", None) or "unknown"
-    llm = apis["OpenAILLM"](client, model_id, temperature=temperature)
-    llm.name = f"{name}:{model_id}"
-    return llm, "live"
+    inner = apis["OpenAILLM"](client, model_id, temperature=temperature)
+    inner.name = f"{name}:{model_id}"
+    return _wrap_counting_llm(apis, inner), "live"
 
 
 def _register_suite_tools(defense: Any, suite: Any) -> None:
@@ -926,9 +994,31 @@ def _defense_stats_from_steps(
     return llm_calls, overhead
 
 
+def _apply_llm_call_counts(
+    rec: AgentDojoCaseResult,
+    *,
+    defense: Any = None,
+    agent_llm: Any = None,
+) -> None:
+    """Fill defense/agent LLM call fields; keep ``llm_calls`` == defense (back-compat)."""
+    defense_calls, overhead = _defense_stats_from_steps(rec.steps, defense)
+    rec.defense_llm_calls = int(defense_calls)
+    rec.llm_calls = int(defense_calls)
+    rec.defense_overhead_ms = float(overhead)
+    agent_calls = 0
+    if agent_llm is not None:
+        agent_calls = int(getattr(agent_llm, "case_llm_calls", 0) or 0)
+    rec.agent_llm_calls = agent_calls
+
+
 def _note_case(summary: AgentDojoSummary, rec: AgentDojoCaseResult) -> None:
     summary.n += 1
+    # Back-compat: llm_calls_total tracks defense-only counts.
     summary.llm_calls_total += int(rec.llm_calls or 0)
+    summary.defense_llm_calls_total += int(
+        rec.defense_llm_calls if rec.defense_llm_calls else rec.llm_calls or 0
+    )
+    summary.agent_llm_calls_total += int(rec.agent_llm_calls or 0)
     summary.latencies_ms.append(float(rec.latency_ms or 0.0))
     summary.defense_overheads_ms.append(float(rec.defense_overhead_ms or 0.0))
     if rec.blocked:
@@ -1038,6 +1128,8 @@ def run_real_agentdojo_suite(
             defense.set_user_task(str(prompt or ""))
             _register_suite_tools(defense, suite)
 
+        if hasattr(llm, "reset_case_calls"):
+            llm.reset_case_calls()
         if hasattr(llm, "configure"):
             # Mock LLM: on attack jobs, follow injection ground_truth so ASR
             # is measurable without a live model (CI). Live LLM ignores this.
@@ -1056,6 +1148,7 @@ def run_real_agentdojo_suite(
             except Exception as exc:
                 rec.error = f"attack_build:{exc}"
                 rec.latency_ms = (time.perf_counter() - start) * 1000
+                _apply_llm_call_counts(rec, defense=defense, agent_llm=llm)
                 results.append(rec)
                 _note_case(summary, rec)
                 continue
@@ -1077,9 +1170,7 @@ def run_real_agentdojo_suite(
             rec.attack_success = bool(security)
         rec.blocked = bool(getattr(guarded, "blocked", False))
         rec.steps = list(getattr(guarded, "steps", []) or [])
-        rec.llm_calls, rec.defense_overhead_ms = _defense_stats_from_steps(
-            rec.steps, defense
-        )
+        _apply_llm_call_counts(rec, defense=defense, agent_llm=llm)
         rec.latency_ms = (time.perf_counter() - start) * 1000
         results.append(rec)
         _note_case(summary, rec)
@@ -1167,9 +1258,7 @@ def run_agentdojo_task(
         rec.attack_success = False
         rec.utility_success = bool(util_hit) and not rec.blocked
 
-    rec.llm_calls, rec.defense_overhead_ms = _defense_stats_from_steps(
-        rec.steps, defense
-    )
+    _apply_llm_call_counts(rec, defense=defense, agent_llm=None)
     rec.latency_ms = (time.perf_counter() - start) * 1000
     return rec
 
@@ -1214,7 +1303,14 @@ def format_agentdojo_summary(
             f"blocked={summary.blocked}",
             f"llm_calls_total={summary.llm_calls_total}  "
             f"per_task="
-            f"{summary.llm_calls_per_task if summary.llm_calls_per_task is not None else 'n/a'}",
+            f"{summary.llm_calls_per_task if summary.llm_calls_per_task is not None else 'n/a'} "
+            f"(defense; back-compat)",
+            f"defense_llm_calls_total={summary.defense_llm_calls_total}  "
+            f"per_task="
+            f"{summary.defense_llm_calls_per_task if summary.defense_llm_calls_per_task is not None else 'n/a'}",
+            f"agent_llm_calls_total={summary.agent_llm_calls_total}  "
+            f"per_task="
+            f"{summary.agent_llm_calls_per_task if summary.agent_llm_calls_per_task is not None else 'n/a'}",
             f"defense_overhead_mean={ms(summary.defense_overhead_mean_ms)}",
         ]
     )

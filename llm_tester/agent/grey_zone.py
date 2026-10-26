@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import sys
+import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, TextIO
 
 from llm_tester.agent.traces import TraceStep
 from llm_tester.artifacts.run_dir import load_metrics, load_results
+
+
+class EmptyGreyZoneError(RuntimeError):
+    """Raised when a rebuild finds no S4 / escalated decisions (strict mode)."""
 
 
 def dumps_traces(traces: Sequence[TraceStep]) -> str:
@@ -68,6 +74,25 @@ def select_grey_zone_ids(
     return ids
 
 
+def _warn_empty_grey_zone(
+    *,
+    filter_mode: str,
+    n_source: int,
+    source_run: Path,
+    stream: TextIO = sys.stderr,
+) -> None:
+    msg = (
+        f"WARNING: grey-zone-rebuild selected 0 traces "
+        f"(filter={filter_mode!r}, source_results={n_source}, "
+        f"run={source_run}). The input run likely had no S4 / escalated "
+        f"decisions (e.g. enable_s4=false). Refusing to treat an empty "
+        f"subset as a successful grey-zone dataset — re-run guard-eval "
+        f"with --enable-s4 / --s4-mock, or pass --strict to fail hard."
+    )
+    print(msg, file=stream)
+    warnings.warn(msg, UserWarning, stacklevel=3)
+
+
 def rebuild_grey_zone_subset(
     run_dir: Path,
     traces: Sequence[TraceStep],
@@ -75,9 +100,15 @@ def rebuild_grey_zone_subset(
     out_path: Path,
     filter_mode: str = "escalated",
     manifest_path: Optional[Path] = None,
+    strict: bool = False,
+    warn_empty: bool = True,
 ) -> Dict[str, Any]:
     """
     Filter ``traces`` to those escalated in ``run_dir`` results; write JSONL.
+
+    When the filter matches nothing, warns loudly on stderr (unless
+    ``warn_empty=False``). With ``strict=True``, raises
+    :class:`EmptyGreyZoneError` instead of writing an empty set.
 
     Returns a manifest dict (also written beside the JSONL by default).
     """
@@ -89,6 +120,19 @@ def rebuild_grey_zone_subset(
     # Preserve selection order from results when possible.
     by_id = {str(t.id): t for t in selected}
     ordered = [by_id[i] for i in ids if i in by_id]
+
+    if not ordered:
+        if warn_empty:
+            _warn_empty_grey_zone(
+                filter_mode=filter_mode,
+                n_source=len(records),
+                source_run=run_dir,
+            )
+        if strict:
+            raise EmptyGreyZoneError(
+                f"No grey-zone traces matched filter={filter_mode!r} "
+                f"in {run_dir} ({len(records)} source results)."
+            )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +149,8 @@ def rebuild_grey_zone_subset(
         "filter": filter_mode,
         "n": len(ordered),
         "n_source_results": len(records),
+        "empty": len(ordered) == 0,
+        "strict": bool(strict),
         "ids": [str(t.id) for t in ordered],
         "out_path": str(out_path.resolve()),
         "source_metrics_slice": {
