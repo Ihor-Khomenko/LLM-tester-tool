@@ -48,3 +48,4 @@ def test_with_ablation_only_s4():
     p = SentinelPolicy().with_ablation(only_s4=True)
     assert not p.enable_s1 and not p.enable_s2 and not p.enable_s3
     assert p.enable_s4
+    assert p.only_s4 is True
