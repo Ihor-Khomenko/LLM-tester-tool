@@ -73,6 +73,10 @@ class SentinelPolicy:
     enable_s2: bool = True
     enable_s3: bool = True
     enable_s4: bool = False  # optional / expensive; off by default
+    # Ablation: S4-only mode (S1–S3 off). When True, every T2 call is sent to
+    # the S4 judge and its score alone decides vs ``tau_high`` (default 0.7).
+    # Set by :meth:`with_ablation` ``only_s4=True`` — not a free-standing toggle.
+    only_s4: bool = False
     # Checkpoint enable flags (ablation: with/without T0 / T1).
     enable_t0: bool = True
     enable_t1: bool = True
@@ -165,7 +169,10 @@ class SentinelPolicy:
             p.enable_s2 = False
             p.enable_s3 = False
             p.enable_s4 = True
+            p.only_s4 = True
             return p
+        # Other ablations must not leave a stale only_s4 flag from a copy.
+        p.only_s4 = False
         if no_s1:
             p.enable_s1 = False
         if no_s2:

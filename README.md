@@ -47,6 +47,8 @@ pip install -e ".[sentinel]"
 pip install -e ".[sentinel-all]"
 # Thesis figures (matplotlib):
 pip install -e ".[figures]"
+# Optional HF detectors (torch/transformers) — kept out of the base install:
+pip install -e ".[detectors]"
 ```
 
 Copy `.env.example` to `.env` and set API keys as needed.

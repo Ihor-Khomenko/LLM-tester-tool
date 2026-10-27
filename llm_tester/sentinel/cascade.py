@@ -96,14 +96,24 @@ def decide_from_risk(
     s4_score: Optional[float] = None,
     stage_scores: Optional[Sequence[StageScore]] = None,
 ) -> Decision:
+    only_s4 = bool(getattr(policy, "only_s4", False)) and bool(policy.enable_s4)
+
     if has_s4_verdict and s4_score is not None:
-        if s4_score >= 0.5:
+        # Full cascade: binary S4 ALLOW/BLOCK scores use 0.5.
+        # only_s4 ablation: S4 score alone vs tau_high (default 0.7).
+        threshold = float(policy.tau_high) if only_s4 else 0.5
+        if s4_score >= threshold:
             return (
                 Decision.ASK_USER
                 if policy.ask_user_on_block or policy.high_risk_action == "ask_user"
                 else Decision.BLOCK
             )
         return Decision.ALLOW
+
+    # only_s4: S1–S3 are off so prior risk is 0 (≤ tau_low). Still escalate
+    # every T2 call to S4 — otherwise the ablation is a no-op.
+    if only_s4 and not has_s4_verdict:
+        return Decision.ESCALATE
 
     stages = stage_scores or ()
 
