@@ -94,6 +94,119 @@ class McpScenarioEvalConfig:
     align_language: bool = True
     run_cap: Optional[int] = None
     max_turns: int = 4
+    dry_run: bool = False
+
+
+def _flatten_stage_scores(decisions: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract per-stage / per-checkpoint scores and reasons from decision dicts."""
+    by_stage: Dict[str, float] = {}
+    by_checkpoint: Dict[str, Dict[str, Any]] = {}
+    all_reasons: List[str] = []
+    for d in decisions or []:
+        if not isinstance(d, dict):
+            continue
+        cp = str(d.get("checkpoint") or "")
+        risk = float(d.get("risk_score") or 0.0)
+        decision = d.get("decision")
+        reasons = list(d.get("reasons") or [])
+        all_reasons.extend(reasons)
+        if cp:
+            by_checkpoint[cp] = {
+                "decision": decision,
+                "risk_score": risk,
+                "reasons": reasons,
+                "stage": d.get("stage"),
+            }
+        for s in d.get("stage_scores") or []:
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("stage") or "")
+            if not name:
+                continue
+            score = float(s.get("score") or 0.0)
+            by_stage[name] = max(score, float(by_stage.get(name, 0.0)))
+            all_reasons.extend(list(s.get("reasons") or []))
+    # Deduplicate reasons preserving order.
+    seen = set()
+    uniq_reasons = []
+    for r in all_reasons:
+        if r not in seen:
+            seen.add(r)
+            uniq_reasons.append(r)
+    return {
+        "by_stage": by_stage,
+        "by_checkpoint": by_checkpoint,
+        "reasons": uniq_reasons,
+    }
+
+
+def plan_mcp_scenario_eval(
+    *,
+    config: Optional[McpScenarioEvalConfig] = None,
+    input_path: Optional[Path] = None,
+    research_root: Optional[Path] = None,
+    scenario_ids: Optional[Sequence[str]] = None,
+    lang: str = "en",
+) -> Dict[str, Any]:
+    """
+    Dry-run planner: load / align / expand cases and report request upper bounds
+    without calling any LLM or running the guard.
+    """
+    cfg = config or McpScenarioEvalConfig()
+    traces = load_scenario_traces(
+        input_path=input_path,
+        research_root=research_root,
+        limit=cfg.limit,
+        lang=lang,
+        scenario_ids=scenario_ids,
+        align_language=cfg.align_language,
+        n_variants=cfg.n_variants,
+        seed=cfg.seed,
+    )
+    mode = (cfg.mode or "replay").lower().strip()
+    planned = []
+    for t in traces:
+        planned.append(
+            {
+                "id": t.id,
+                "label": t.label,
+                "scenario_family": scenario_family_of(t),
+                "attack_type": t.attack_type,
+                "variant_index": (t.meta or {}).get("variant_index", 0),
+                "base_id": (t.meta or {}).get("base_id", t.id),
+                "user_request": t.user_request,
+                "has_call": t.call is not None,
+                "call": (
+                    {"name": t.call.name, "arguments": dict(t.call.arguments or {})}
+                    if t.call
+                    else None
+                ),
+                "n_tool_outputs": len(t.tool_outputs or []),
+            }
+        )
+    per = estimate_requests_per_mcp_scenario(
+        with_sentinel=True,
+        enable_s4=bool(cfg.enable_s4 or cfg.s4_mock),
+        mode=mode,
+        max_turns=cfg.max_turns,
+    )
+    n_def = max(1, len(cfg.defenses))
+    return {
+        "dry_run": True,
+        "mode": mode,
+        "lang": lang,
+        "n_cases": len(planned),
+        "n_defenses": n_def,
+        "defenses": list(cfg.defenses),
+        "planned_cases": planned,
+        "request_upper_bound_per_case": per,
+        "request_upper_bound_total": {
+            "agent": int(per["agent"]) * len(planned) * n_def,
+            "defense": int(per["defense"]) * len(planned) * n_def,
+            "total_upper_bound": int(per["total_upper_bound"]) * len(planned) * n_def,
+        },
+        "note": "No LLM calls; no guard execution. Safe for budget planning.",
+    }
 
 
 def estimate_requests_per_mcp_scenario(
@@ -556,6 +669,22 @@ def run_mcp_scenario_eval(
     out_dir.mkdir(parents=True, exist_ok=True)
     mode = (cfg.mode or "replay").lower().strip()
 
+    if cfg.dry_run:
+        plan = plan_mcp_scenario_eval(
+            config=cfg,
+            input_path=input_path,
+            research_root=research_root,
+            scenario_ids=scenario_ids,
+            lang=lang,
+        )
+        (out_dir / "dry_run.json").write_text(
+            json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        (out_dir / "summary.json").write_text(
+            json.dumps(plan, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        return plan
+
     traces = load_scenario_traces(
         input_path=input_path,
         research_root=research_root,
@@ -605,6 +734,7 @@ def run_mcp_scenario_eval(
             enriched: List[Dict[str, Any]] = []
             id_to_family = {str(t.id): scenario_family_of(t) for t in traces}
             for rec in records:
+                stages = _flatten_stage_scores(rec.get("decisions") or [])
                 row = {
                     "defense": defense,
                     "id": rec.get("id"),
@@ -621,6 +751,10 @@ def run_mcp_scenario_eval(
                     "first_block": rec.get("first_block"),
                     "risk_score": rec.get("risk_score"),
                     "metric_mode": "detection_on_recorded_traces",
+                    "stage_scores": stages.get("by_stage"),
+                    "checkpoint_scores": stages.get("by_checkpoint"),
+                    "reasons": stages.get("reasons"),
+                    "decisions": rec.get("decisions"),
                 }
                 enriched.append(row)
                 with results_path.open("a", encoding="utf-8") as fh:

@@ -289,7 +289,15 @@ def _resource_basename(value: str) -> str:
 
 
 def _authorized_by_user(value: str, user_l: str) -> bool:
-    """True if the user request names this resource (path or distinctive basename)."""
+    """
+    True if the user request names this resource (path or distinctive basename).
+
+    Stem matching applies only to **single-extension** basenames (``summary.txt``
+    when the user said ``summary``). Multi-dot names such as
+    ``allowed_output.txt.evil`` are **not** authorised merely because
+    ``allowed_output.txt`` appears in the user text — that is a classic
+    allowlist prefix/extension bypass.
+    """
     v_l = value.lower().strip()
     if not v_l:
         return True
@@ -299,6 +307,9 @@ def _authorized_by_user(value: str, user_l: str) -> bool:
     # Full basename must appear (secret_data.txt), not a common English stem.
     if basename and len(basename) >= 4 and basename in user_l:
         return True
+    # Multi-extension / prefix-bypass forms: require exact basename match only.
+    if basename.count(".") >= 2:
+        return False
     stem = basename.rsplit(".", 1)[0] if "." in basename else basename
     if (
         stem

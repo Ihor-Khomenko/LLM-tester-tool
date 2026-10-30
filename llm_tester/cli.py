@@ -907,6 +907,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Live-mode ReAct turns per scenario (default 4; ≤4 agent requests)",
     )
     mse.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Plan cases and print request upper bounds without LLM calls or "
+            "guard execution (works with --mode live|replay)"
+        ),
+    )
+    mse.add_argument(
         "--enable-s4",
         action="store_true",
         help="Enable S4 on sentinel (needs --s4-mock offline, or a live provider)",
@@ -1507,6 +1515,7 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         align_language=not bool(args.no_align_language),
         run_cap=args.run_cap,
         max_turns=max(1, int(args.max_turns or 4)),
+        dry_run=bool(getattr(args, "dry_run", False)),
     )
     try:
         summary = run_mcp_scenario_eval(
@@ -1528,7 +1537,25 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         return 1
 
     if args.json:
-        print(json.dumps(summary, indent=2))
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+    elif summary.get("dry_run"):
+        tot = summary.get("request_upper_bound_total") or {}
+        print(
+            f"mcp-scenario-eval dry-run ({summary.get('mode')}): "
+            f"{summary.get('n_cases', 0)} cases × "
+            f"{summary.get('n_defenses', 0)} defenses"
+        )
+        print(
+            f"  request upper bound total ≤ {tot.get('total_upper_bound')} "
+            f"(agent={tot.get('agent')}, defense={tot.get('defense')})"
+        )
+        for case in (summary.get("planned_cases") or [])[:20]:
+            print(
+                f"  - {case.get('id')} [{case.get('label')}/"
+                f"{case.get('scenario_family')}]"
+            )
+        if len(summary.get("planned_cases") or []) > 20:
+            print(f"  … ({len(summary['planned_cases']) - 20} more)")
     else:
         print(
             f"mcp-scenario-eval ({summary.get('config', {}).get('mode')}): "
