@@ -840,9 +840,72 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Restrict to scenario id(s) (repeatable)",
     )
-    mse.add_argument("--lang", choices=["en", "uk"], default="en")
+    mse.add_argument(
+        "--lang",
+        choices=["en", "uk"],
+        default="en",
+        help="Scenario language; user + payloads are aligned to this (default en)",
+    )
+    mse.add_argument(
+        "--no-align-language",
+        action="store_true",
+        help="Disable user/payload language alignment",
+    )
     mse.add_argument("--limit", type=int, default=None)
     mse.add_argument("--policy", type=Path, default=None)
+    mse.add_argument(
+        "--mode",
+        choices=["replay", "live"],
+        default="replay",
+        help=(
+            "replay=detection-on-recorded-traces (TPR/FPR, not ASR); "
+            "live=LLM agent + mock tools (measured ASR). Default: replay"
+        ),
+    )
+    mse.add_argument(
+        "--variants",
+        type=int,
+        default=1,
+        help="Expand each scenario into N paraphrased/retargeted variants (default 1)",
+    )
+    mse.add_argument(
+        "--min-n-for-ci",
+        type=int,
+        default=5,
+        help="Refuse Wilson CI endpoints when n < this (default 5)",
+    )
+    mse.add_argument(
+        "--run-cap",
+        type=int,
+        default=None,
+        help="Hard LLM-request cap for live mode (same idea as adaptive-attack)",
+    )
+    mse.add_argument(
+        "--ledger",
+        type=Path,
+        default=None,
+        help="Optional JSON ledger path for live-mode agent requests",
+    )
+    mse.add_argument(
+        "--daily-cap",
+        type=int,
+        default=None,
+        help="Override OR_DAILY_CAP for the ledger (default 45)",
+    )
+    mse.add_argument(
+        "--provider",
+        default=None,
+        choices=sorted(PROVIDERS.keys()),
+        help="Live-mode agent provider (openrouter recommended); omit with --mock",
+    )
+    mse.add_argument("--model", default=None, help="Live-mode agent model id")
+    mse.add_argument("--base-url", default=None, help="Override provider base URL")
+    mse.add_argument(
+        "--max-turns",
+        type=int,
+        default=4,
+        help="Live-mode ReAct turns per scenario (default 4; ≤4 agent requests)",
+    )
     mse.add_argument(
         "--enable-s4",
         action="store_true",
@@ -852,6 +915,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--s4-mock",
         action="store_true",
         help="Offline MockS4Chat when --enable-s4",
+    )
+    mse.add_argument(
+        "--mock",
+        action="store_true",
+        default=True,
+        help="Offline mocks (default; required for CI)",
+    )
+    mse.add_argument(
+        "--no-mock",
+        action="store_true",
+        help="Use a real --provider for live mode (reads OPENROUTER_API_KEY from env)",
     )
     mse.add_argument(
         "--proxy-mode",
@@ -1385,16 +1459,54 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         McpScenarioEvalConfig,
         run_mcp_scenario_eval,
     )
+    from llm_tester.budget.ledger import RequestLedger
+
+    use_mock = not bool(getattr(args, "no_mock", False))
+    mode = str(args.mode or "replay")
+    if mode == "live" and not use_mock and not args.provider:
+        print(
+            "live --no-mock requires --provider (e.g. openrouter). "
+            "API keys are read from the environment only.",
+            file=sys.stderr,
+        )
+        return 2
+
+    ledger = None
+    if args.ledger is not None or args.daily_cap is not None or args.run_cap is not None:
+        kwargs: Dict[str, Any] = {}
+        if args.ledger is not None:
+            kwargs["path"] = Path(args.ledger)
+        if args.daily_cap is not None:
+            kwargs["daily_cap"] = int(args.daily_cap)
+        ledger = RequestLedger(**kwargs)
+
+    provider = None
+    if mode == "live" and not use_mock and args.provider:
+        from llm_tester.agent.provider_adapter import build_llm_chat
+
+        provider = build_llm_chat(
+            args.provider,
+            args.model,
+            base_url=args.base_url,
+            temperature=DEFAULT_TEMPERATURE,
+            seed=args.seed,
+        )
 
     cfg = McpScenarioEvalConfig(
         defenses=list(args.defenses) if args.defenses else ["none", "sentinel"],
-        mock=True,
+        mock=use_mock,
         enable_s4=bool(args.enable_s4),
         s4_mock=bool(args.s4_mock),
         no_s4=not (args.enable_s4 or args.s4_mock),
         limit=args.limit,
         seed=int(args.seed),
         proxy_mode=bool(args.proxy_mode),
+        mode=mode,
+        n_variants=max(1, int(args.variants or 1)),
+        min_n_for_ci=max(1, int(args.min_n_for_ci or 5)),
+        align_language=not bool(args.no_align_language),
+        run_cap=args.run_cap,
+        max_turns=max(1, int(args.max_turns or 4)),
     )
     try:
         summary = run_mcp_scenario_eval(
@@ -1405,6 +1517,8 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
             policy_path=args.policy,
             scenario_ids=args.scenario_ids,
             lang=args.lang,
+            ledger=ledger,
+            provider=provider,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
@@ -1417,19 +1531,29 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         print(json.dumps(summary, indent=2))
     else:
         print(
-            f"mcp-scenario-eval: {summary.get('n_scenarios', 0)} scenarios → "
+            f"mcp-scenario-eval ({summary.get('config', {}).get('mode')}): "
+            f"{summary.get('n_scenarios', 0)} scenarios → "
             f"{summary.get('results_path')}"
         )
         for name, block in (summary.get("by_defense") or {}).items():
-            asr = (block.get("asr") or {}).get("asr_with_guard")
             util = (block.get("utility") or {}).get("utility_benign")
-            tpr = (block.get("detections") or {}).get("tpr")
-            print(f"  {name}: ASR={asr}  utility_benign={util}  TPR={tpr}")
+            if block.get("metric_mode") == "live_agent":
+                asr = (block.get("asr") or {}).get("asr")
+                print(f"  {name}: ASR={asr}  utility_benign={util}")
+            else:
+                det = block.get("detection") or block.get("detections") or {}
+                print(
+                    f"  {name}: TPR={det.get('tpr')}  FPR={det.get('fpr')}  "
+                    f"utility_benign={util}"
+                )
         est = summary.get("request_estimates") or {}
         if est:
-            print("Request upper bounds (per scenario, defense LLM only):")
+            print("Request upper bounds (per scenario):")
             for key, val in est.items():
-                print(f"  {key}: ≤ {val.get('total_upper_bound')}")
+                print(
+                    f"  {key}: ≤ {val.get('total_upper_bound')} "
+                    f"(agent={val.get('agent')}, defense={val.get('defense')})"
+                )
     return 0
 
 
