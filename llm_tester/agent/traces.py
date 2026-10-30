@@ -275,12 +275,15 @@ def parse_trace_record(data: Dict[str, Any], *, default_id: str = "") -> TraceSt
         if isinstance(o, str):
             norm_outputs.append({"source": "tool", "content": o})
         elif isinstance(o, dict):
-            norm_outputs.append(
-                {
-                    "source": str(o.get("source") or o.get("tool") or o.get("name") or "tool"),
-                    "content": str(o.get("content") or o.get("text") or o.get("output") or ""),
-                }
-            )
+            item = {
+                "source": str(o.get("source") or o.get("tool") or o.get("name") or "tool"),
+                "content": str(o.get("content") or o.get("text") or o.get("output") or ""),
+            }
+            if o.get("payload_file"):
+                item["payload_file"] = o.get("payload_file")
+            if o.get("untrusted") is not None:
+                item["untrusted"] = bool(o.get("untrusted"))
+            norm_outputs.append(item)
 
     call = _as_call(data.get("call") or data.get("tool_call") or data.get("planned_call"))
 

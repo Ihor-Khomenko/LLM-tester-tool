@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
@@ -367,61 +368,102 @@ class SentinelGuard:
         return result
 
 
+# Marker that starts an untrusted instruction block (en + uk, general classes —
+# not scenario-literal strings). Used by ``_sanitize_injection``.
+_INJECTION_BLOCK_START = re.compile(
+    r"("
+    # System / role-override headers
+    r"\[\s*SYSTEM[^\]]*\]|"
+    r"SYSTEM\s*:\s*CRITICAL\s*OVERRIDE|"
+    r"<<\s*SYS\s*>>|"
+    r"<\s*/?\s*IMPORTANT\s*>|"
+    r"IMPORTANT!{1,3}|"
+    r"#{2,}\s*ADMIN\s*MODE|"
+    # Imperative ignore-previous (EN)
+    r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|directives?)|"
+    r"disregard\s+(all\s+)?(previous|prior|earlier)\s+\w+|"
+    # Imperative ignore-previous (UK) — morphological, not a fixed sentence
+    r"ігноруй(те)?\s+(вс[іi]\s+)?попередн\w*|"
+    r"нехтуй(те)?\s+(вс[іi]\s+)?попередн\w*|"
+    # Role-claim / compulsion markers (EN + UK)
+    r"you\s+(are\s+no\s+longer|must\s+immediately|are\s+now\s+only)|"
+    r"your\s+only\s+task\s+is|"
+    r"ти\s+(більше\s+не\s+є|забов['’]?язаний|відтепер)|"
+    r"твоє\s+єдине\s+завдання|"
+    r"нове\s+правило\s*:"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
 def _sanitize_injection(text: str) -> str:
     """
-    Best-effort strip of common injection wrappers (en + uk).
+    Neutralise untrusted instruction blocks in tool output (en + uk).
 
-    Not a security boundary. Returns the original string unchanged when no
-    pattern matched (callers must not label that as sanitized).
+    **Principled behaviour:** when a general injection-block starter is found
+    (system/role override header, ignore-previous imperative, or role-claim /
+    compulsion marker), the **entire contiguous block** from that marker
+    through the following numbered/bulleted instruction lines and imperative
+    sentences is replaced with the placeholder
+    ``[UNTRUSTED_INSTRUCTION_BLOCK_REMOVED]``. Preceding benign content
+    (e.g. a legitimate report sentence before the override) is kept.
+
+    This is best-effort provenance hygiene for downstream agents — **not** a
+    security boundary. Returns the original string unchanged when no starter
+    matched (callers must not label that as sanitized).
     """
     import re
 
-    patterns = [
-        re.compile(
-            r"IMPORTANT!!!\s*Ignore\s+all\s+previous[^\n]*\n?",
-            re.IGNORECASE,
-        ),
-        re.compile(r"<\s*/?\s*IMPORTANT\s*>", re.IGNORECASE),
-        re.compile(
-            r"ignore\s+(all\s+)?(previous|prior)\s+(instructions?|prompts?)[^\n]*",
-            re.IGNORECASE,
-        ),
-        # Ukrainian ignore-previous / forced-override phrasing.
-        re.compile(
-            r"ігноруй(те)?\s+(вс[іi]\s+)?попередн\w*\s+(інструкц\w*|промпт\w*)[^\n]*",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\[?\s*SYSTEM:\s*CRITICAL\s*OVERRIDE\s*\]?:?[^\n]*\n?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"УВАГА!\s*Твоє\s+(системне\s+налаштування|нове\s+завдання)[^\n]*\n?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"Ти\s+ЗАБОВ['’]?ЯЗАНИЙ[^\n]*\n?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"НЕ\s+ПИШИ\s+ЖОДНОГО\s+ТЕКСТУ[^\n]*\n?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"прихован\w*\s+інструкц\w*[^\n]*",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"do\s+not\s+(tell|inform|disclose)\s+(the\s+)?user[^\n]*",
-            re.IGNORECASE,
-        ),
-    ]
-    out = text
-    for p in patterns:
-        out = p.sub(" ", out)
-    cleaned = re.sub(r"[ \t]{2,}", " ", out)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-    return cleaned
+    if not text:
+        return text
+    m = _INJECTION_BLOCK_START.search(text)
+    if not m:
+        # Soft single-line cleanups that are not full blocks.
+        soft = [
+            re.compile(
+                r"do\s+not\s+(tell|inform|disclose)\s+(the\s+)?user[^\n]*",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"не\s+(каж|повідомл|розголошуй)\w*[^\n]*",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"прихован\w*\s+інструкц\w*[^\n]*",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"(hidden|secret)\s+instruction[^\n]*",
+                re.IGNORECASE,
+            ),
+        ]
+        out = text
+        for p in soft:
+            out = p.sub(" ", out)
+        cleaned = re.sub(r"[ \t]{2,}", " ", out)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned
+
+    head = text[: m.start()].rstrip()
+    # Consume the rest of the injection block: from the marker to EOF, or until
+    # a blank line followed by clearly benign prose without imperatives —
+    # default is to neutralize through end of string (safest for tool outputs).
+    tail = text[m.start() :]
+    # Keep a trailing non-imperative short footer if separated by 2+ blank lines
+    # and lacking tool-call / override cues.
+    parts = re.split(r"\n{3,}", tail, maxsplit=1)
+    block = parts[0]
+    footer = parts[1] if len(parts) > 1 else ""
+    if footer and re.search(
+        r"(tool|інструмент|must|забов|ignore|ігнору|system\s*:)",
+        footer,
+        re.I,
+    ):
+        block = tail
+        footer = ""
+    placeholder = "[UNTRUSTED_INSTRUCTION_BLOCK_REMOVED]"
+    pieces = [p for p in (head, placeholder, footer.strip()) if p]
+    return "\n\n".join(pieces).strip()
 
 
 def build_sentinel(

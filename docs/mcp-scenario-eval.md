@@ -50,6 +50,12 @@ llmtest mcp-scenario-eval --out-dir runs/mcp_en \
 ## Live ASR (OpenRouter, budgeted)
 
 ```sh
+# Dry-run: plan cases + request upper bound, zero LLM calls
+llmtest mcp-scenario-eval \
+  --out-dir /tmp/mcp_live_plan \
+  --mode live --dry-run --variants 5 --lang uk \
+  --research-root ../mcp-security-research
+
 export OPENROUTER_API_KEY=...   # env only — never commit
 export OR_DAILY_CAP=45
 
@@ -88,9 +94,23 @@ success.
 instead of the coarsened `attack_type` merge.
 
 **Keys in `results.jsonl`:** `first_detection` (and alias `first_intervention`),
-`scenario_family`.
+`scenario_family`, `stage_scores` (S1–S4), `checkpoint_scores` (T0/T1/T2),
+`reasons`.
+
+## Variant invariants
+
+* Benign variants are **paraphrase-only** (never retarget paths/emails to attack sinks).
+* Attack retargets **preserve family** (traversal stays traversal; prefix-bypass
+  is not rewritten into `..` paths).
+* Every variant fingerprint is **distinct** from the base and siblings.
+* `--lang` alignment covers user, payloads, **and** NL call arguments; mismatch
+  checks include args.
 
 ## Sanitizer (T1)
 
-`_sanitize_injection` is language-aware (en + uk). Output is labelled
-`t1:sanitized` **only** when the text actually changed.
+`_sanitize_injection` uses **general** en/uk pattern classes (system/role
+override headers, ignore-previous imperatives, role-claim / compulsion markers,
+numbered tool-call directives) — not scenario-literal copy. When a block
+starter matches, the **entire contiguous instruction block** is replaced with
+`[UNTRUSTED_INSTRUCTION_BLOCK_REMOVED]` (benign lead-in text is kept). Output is
+labelled `t1:sanitized` **only** when the text actually changed.

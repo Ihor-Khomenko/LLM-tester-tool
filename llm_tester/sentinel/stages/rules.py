@@ -21,10 +21,10 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
         0.95,
     ),
     (
-        # Ukrainian / mixed: «ігноруй попередні інструкції»
+        # UK morphological ignore-previous (not a fixed catalog sentence).
         "ignore_previous_uk",
         re.compile(
-            r"ігноруй(те)?\s+(вс[іi]\s+)?попередн\w*\s+(інструкц\w*|промпт\w*)",
+            r"(ігноруй(те)?|нехтуй(те)?)\s+(вс[іi]\s+)?попередн\w*",
             re.IGNORECASE,
         ),
         0.95,
@@ -38,18 +38,19 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
         "system_override",
         re.compile(
             r"(system\s*:\s*|\[SYSTEM\]|<<\s*SYS\s*>>|"
-            r"SYSTEM:\s*CRITICAL\s*OVERRIDE)",
+            r"SYSTEM:\s*CRITICAL\s*OVERRIDE|#{2,}\s*ADMIN\s*MODE)",
             re.IGNORECASE,
         ),
         0.85,
     ),
     (
-        "system_override_uk",
+        # Role-claim / compulsion class (EN + UK), not scenario literals.
+        "role_claim_override",
         re.compile(
-            r"(системн\w+\s+налаштуван\w+\s+було\s+змінен|"
-            r"Твоє\s+ЄДИНЕ\s+завдання|"
-            r"ЗАБОВ['’]?ЯЗАНИЙ|"
-            r"ВИТІК\s+ДАНИХ)",
+            r"(you\s+are\s+no\s+longer|your\s+only\s+task\s+is|"
+            r"you\s+must\s+immediately|"
+            r"ти\s+більше\s+не\s+є|твоє\s+єдине\s+завдання|"
+            r"ти\s+забов['’]?язаний|нове\s+правило\s*:)",
             re.IGNORECASE,
         ),
         0.9,
@@ -57,7 +58,7 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
     (
         "hacking_prompt",
         re.compile(
-            r"IMPORTANT!!!\s*Ignore\s+all\s+previous",
+            r"IMPORTANT!{1,3}\s*.{0,40}ignore\s+(all\s+)?previous",
             re.IGNORECASE,
         ),
         0.98,
@@ -73,7 +74,7 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
     (
         "do_not_tell_user_uk",
         re.compile(
-            r"не\s+(каж|повідомл|розголошуй)\w*\s+(користувач\w*)?",
+            r"не\s+(каж|повідомл|розголошуй)\w*",
             re.IGNORECASE,
         ),
         0.8,
@@ -109,6 +110,17 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
             re.IGNORECASE,
         ),
         0.75,
+    ),
+    (
+        # Numbered instruction block that directs a tool call (en/uk).
+        "numbered_tool_directive",
+        re.compile(
+            r"(?:^|\n)\s*\d+[.)]\s+.{0,80}"
+            r"(?:use\s+(?:the\s+)?tool|використ\w*\s+інструмент|"
+            r"call\s+\w+|invoke\s+\w+)",
+            re.IGNORECASE,
+        ),
+        0.8,
     ),
 )
 
