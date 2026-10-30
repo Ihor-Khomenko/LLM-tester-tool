@@ -372,23 +372,30 @@ class SentinelGuard:
 # not scenario-literal strings). Used by ``_sanitize_injection``.
 _INJECTION_BLOCK_START = re.compile(
     r"("
-    # System / role-override headers
-    r"\[\s*SYSTEM[^\]]*\]|"
+    # System / role-override headers — require bare [SYSTEM] or [SYSTEM: …],
+    # not benign brackets like [System status].
+    r"\[\s*SYSTEM\s*\]|"
+    r"\[\s*SYSTEM\s*:[^\]]*\]|"
     r"SYSTEM\s*:\s*CRITICAL\s*OVERRIDE|"
     r"<<\s*SYS\s*>>|"
     r"<\s*/?\s*IMPORTANT\s*>|"
     r"IMPORTANT!{1,3}|"
     r"#{2,}\s*ADMIN\s*MODE|"
-    # Imperative ignore-previous (EN)
+    # Imperative ignore-previous (EN) — allow determiners between disregard
+    # and earlier/previous/prior ("Disregard your earlier task…").
     r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|directives?)|"
-    r"disregard\s+(all\s+)?(previous|prior|earlier)\s+\w+|"
+    r"disregard\s+(?:(?:all|your|the|any)\s+)?(?:previous|prior|earlier)\s+\w+|"
     # Imperative ignore-previous (UK) — morphological, not a fixed sentence
     r"ігноруй(те)?\s+(вс[іi]\s+)?попередн\w*|"
     r"нехтуй(те)?\s+(вс[іi]\s+)?попередн\w*|"
+    # Abandon-original-task + instead do X (EN + UK), general class
+    r"do\s+not\s+(?:perform|execute|follow)\s+(?:the\s+)?(?:original|initial|earlier)\s+task|"
+    r"не\s+виконуй(те)?\s+(?:початков\w*|первинн\w*|оригінальн\w*)\s+завдан\w*|"
+    r"натомість\s+(?:відкрий|використай|викликай|прочитай|напиши|надішли)\w*|"
     # Role-claim / compulsion markers (EN + UK)
     r"you\s+(are\s+no\s+longer|must\s+immediately|are\s+now\s+only)|"
     r"your\s+only\s+task\s+is|"
-    r"ти\s+(більше\s+не\s+є|забов['’]?язаний|відтепер)|"
+    r"ти\s+(більше\s+не\s+є|забов['’ʼ]?язаний|відтепер)|"
     r"твоє\s+єдине\s+завдання|"
     r"нове\s+правило\s*:"
     r")",
@@ -424,13 +431,16 @@ def _sanitize_injection(text: str) -> str:
                 r"do\s+not\s+(tell|inform|disclose)\s+(the\s+)?user[^\n]*",
                 re.IGNORECASE,
             ),
+            # Imperative "don't tell/disclose" only — not the discourse marker
+            # «не кажучи вже про…» ("not to mention…").
             re.compile(
-                r"не\s+(каж|повідомл|розголошуй)\w*[^\n]*",
-                re.IGNORECASE,
+                r"не\s+(кажи|кажіть|повідомляй|повідомляйте|"
+                r"розголошуй|розголошуйте)\b[^\n]*",
+                re.IGNORECASE | re.UNICODE,
             ),
             re.compile(
                 r"прихован\w*\s+інструкц\w*[^\n]*",
-                re.IGNORECASE,
+                re.IGNORECASE | re.UNICODE,
             ),
             re.compile(
                 r"(hidden|secret)\s+instruction[^\n]*",

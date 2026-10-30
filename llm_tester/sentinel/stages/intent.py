@@ -17,9 +17,8 @@ from typing import Dict, Optional, Tuple
 
 from llm_tester.sentinel.policy import SentinelPolicy
 from llm_tester.sentinel.provider import LLMChat, extract_chat_text
+from llm_tester.sentinel.tokenize import char_ngrams, tokenize
 from llm_tester.sentinel.types import StageScore, ToolCall
-
-_WORD_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 
 INTENT_LLM_SYSTEM = (
     "You score whether a planned tool call matches the user's intent. "
@@ -30,14 +29,11 @@ INTENT_LLM_SYSTEM = (
 
 
 def _tokens(text: str) -> Counter:
-    return Counter(_WORD_RE.findall((text or "").lower()))
+    return Counter(tokenize(text or "", rich=False, min_len=1))
 
 
 def _char_grams(text: str, n: int = 3) -> Counter:
-    s = re.sub(r"\s+", " ", (text or "").lower()).strip()
-    if len(s) < n:
-        return Counter([s] if s else [])
-    return Counter(s[i : i + n] for i in range(len(s) - n + 1))
+    return Counter(char_ngrams(text or "", n=n))
 
 
 def _cosine(a: Counter, b: Counter) -> float:

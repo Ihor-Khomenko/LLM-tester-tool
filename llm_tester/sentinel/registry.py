@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from llm_tester.sentinel.tokenize import tokenize
 from llm_tester.sentinel.types import ToolSpec
-
-
-_TOKEN_RE = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 
 
 def sha256_text(text: str) -> str:
@@ -18,7 +15,7 @@ def sha256_text(text: str) -> str:
 
 
 def _tokens(text: str) -> set:
-    return set(_TOKEN_RE.findall(text.lower()))
+    return set(tokenize(text or "", rich=False, min_len=1))
 
 
 def jaccard(a: set, b: set) -> float:

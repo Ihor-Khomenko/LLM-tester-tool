@@ -18,9 +18,9 @@ from llm_tester.sentinel.side_effects import (
     is_side_effect_tool,
     unauthorized_sensitive_paths,
 )
+from llm_tester.sentinel.tokenize import char_ngrams
+from llm_tester.sentinel.tokenize import tokenize as unicode_tokenize
 from llm_tester.sentinel.types import StageScore, ToolCall
-
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_@./:+-]{2,}")
 
 _MONTHS = {
     "january": 1,
@@ -66,16 +66,8 @@ _TIME_RE = re.compile(
 
 
 def tokenize(text: str) -> List[str]:
-    if not text:
-        return []
-    return [t.lower() for t in _TOKEN_RE.findall(str(text))]
-
-
-def char_ngrams(text: str, n: int = 3) -> Set[str]:
-    s = re.sub(r"\s+", " ", str(text).lower()).strip()
-    if len(s) < n:
-        return {s} if s else set()
-    return {s[i : i + n] for i in range(len(s) - n + 1)}
+    """S2 tokens: Unicode words plus path/email punctuation, min length 2."""
+    return unicode_tokenize(text, rich=True, min_len=2)
 
 
 def _hour24(hour: int, ampm: Optional[str]) -> int:
@@ -338,7 +330,7 @@ class TaintStage:
         score = max(weighted_scores) if weighted_scores else 0.0
         # Attacker tool name drawn from untrusted output (and absent from u).
         name_pi, name_detail = argument_attribution(call.name, self.store)
-        user_toks = {t.lower() for t in tokenize(self.store.user_request)}
+        user_toks = set(tokenize(self.store.user_request))
         name_tokens = set(tokenize(call.name))
         name_in_user = bool(name_tokens & user_toks)
         if name_pi >= 0.4 and not name_in_user:

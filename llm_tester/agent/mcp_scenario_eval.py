@@ -57,11 +57,13 @@ class AllowAllGuard(BaseGuard):
         )
 
     def on_tool_output(self, source: str, content: str, *, sanitize: bool = True):
+        # Passthrough: do not fill sanitized_content with unchanged text —
+        # that would look like a sanitize intervention to metrics.
         return allow_decision(
             checkpoint=Checkpoint.T1.value,
             stage="none",
             reasons=["none:allow"],
-            sanitized_content=content if sanitize else None,
+            sanitized_content=None,
         )
 
     def check_tool_call(
