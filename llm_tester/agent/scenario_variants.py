@@ -75,15 +75,30 @@ _USER_PARAPHRASE_EN = [
     "Kindly {base_lower}",
     "Request: {base}",
 ]
+# Keep padding short so benign S3 similarity stays above s3_min_similarity
+# after paraphrase (scale/threshold unchanged — avoid diluting intent tokens).
 _USER_PARAPHRASE_UK = [
-    "Будь ласка, {base}",
-    "{base} Відповідь коротко.",
-    "Завдання: {base}",
-    "Чи можеш ти {base_lower}",
-    "{base} Коли закінчиш — коротко підтвердь.",
-    "Прошу: {base}",
-    "Запит: {base}",
+    "Будь ласка, {base_lower}",
+    "{base} Коротко.",
+    "Запит: {base_lower}",
+    "Чи можеш ти {base_inf}",
+    "{base} Підтвердь.",
+    "Прошу {base_inf}",
+    "Потрібно: {base_lower}",
 ]
+
+# Imperative → infinitive for modal frames («Чи можеш ти прочитати…»).
+_UK_IMP_TO_INF = (
+    (re.compile(r"^прочитай\b", re.I | re.UNICODE), "прочитати"),
+    (re.compile(r"^збережи\b", re.I | re.UNICODE), "зберегти"),
+    (re.compile(r"^зроби\b", re.I | re.UNICODE), "зробити"),
+    (re.compile(r"^підсумуй\b", re.I | re.UNICODE), "підсумувати"),
+    (re.compile(r"^напиши\b", re.I | re.UNICODE), "написати"),
+    (re.compile(r"^відправ\b", re.I | re.UNICODE), "відправити"),
+    (re.compile(r"^виконай\b", re.I | re.UNICODE), "виконати"),
+    (re.compile(r"^відкрий\b", re.I | re.UNICODE), "відкрити"),
+    (re.compile(r"^перевір\b", re.I | re.UNICODE), "перевірити"),
+)
 
 
 class VariantGenerationError(ValueError):
@@ -105,6 +120,17 @@ def is_benign_label(label: str) -> bool:
     return str(label or "").lower() in ("benign", "safe", "clean")
 
 
+def _uk_infinitive(text: str) -> str:
+    """Lowercase first letter and map a leading UK imperative to infinitive."""
+    if not text:
+        return text
+    body = text[0].lower() + text[1:] if text[0].isupper() else text
+    for pat, inf in _UK_IMP_TO_INF:
+        if pat.search(body):
+            return pat.sub(inf, body, count=1)
+    return body
+
+
 def _paraphrase_user(text: str, *, variant: int, lang: str) -> str:
     """Paraphrase for variant >= 1. Never returns the original for variant >= 1."""
     if variant <= 0:
@@ -120,8 +146,12 @@ def _paraphrase_user(text: str, *, variant: int, lang: str) -> str:
     low = stripped.lower()
     if low.startswith(("please ", "будь ласка", "kindly ", "прошу")):
         body = stripped.split(" ", 1)[1] if " " in stripped else stripped
-        base, base_lower = body, body[0].lower() + body[1:] if body else body
-    out = tmpl.format(base=base, base_lower=base_lower)
+        # Drop a leading comma after «Будь ласка, …».
+        body = body.lstrip(", ").strip() if body else body
+        base = body
+        base_lower = body[0].lower() + body[1:] if body else body
+    base_inf = _uk_infinitive(base) if lang.startswith("uk") else base_lower
+    out = tmpl.format(base=base, base_lower=base_lower, base_inf=base_inf)
     if out.strip() == stripped:
         out = f"{tmpl.split('{')[0].strip()} {stripped}".strip()
     return out
@@ -136,7 +166,9 @@ def _paths_for_family(family: str) -> List[str]:
     if f in ("malicious_write", "tool_poisoning", "judge_evasion"):
         return list(_MALWARE_WRITE_PATHS)
     if f in ("indirect_prompt_injection", "indirect_injection", "data_exfiltration"):
-        return list(_EXFIL_TMP_PATHS) + list(_MALWARE_WRITE_PATHS)
+        # Keep exfiltration sinks only — in-vault malware writes like
+        # ``payload_out.txt`` are not clearly exfil and weaken the family.
+        return list(_EXFIL_TMP_PATHS)
     # Unknown attack family: prefer malware writes over traversal to avoid
     # silently changing family to path_traversal.
     return list(_MALWARE_WRITE_PATHS)
@@ -173,6 +205,17 @@ def family_path_ok(family: str, path: str, *, is_base: bool = False) -> bool:
         return is_base and "allowed_output" in p.lower()
     if f in ("malicious_write", "tool_poisoning", "judge_evasion"):
         return ".." not in p  # keep writes in-family (no silent upgrade to traversal)
+    if f in ("indirect_prompt_injection", "indirect_injection", "data_exfiltration"):
+        # Variant must still look like exfiltration (tmp / leak / dump / stolen).
+        if is_base:
+            return True
+        return bool(
+            re.search(
+                r"(?:/tmp/|/var/tmp/|exfil|leak|dump|stolen)",
+                p,
+                re.I,
+            )
+        )
     return True
 
 

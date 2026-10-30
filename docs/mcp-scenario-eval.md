@@ -37,7 +37,16 @@ User prompts and tool outputs / payloads are **aligned** to `--lang` (default on
 Research vault attack payloads are often Ukrainian even when export `--lang en`
 only localises the user prompt; alignment rewrites known payloads / injection
 markers so S3 intent is not artificially deflated. Use `--no-align-language` to
-disable. Thresholds are not tuned.
+disable.
+
+**Correctness (not threshold tuning):** S2/S3 tokenizers are Unicode-aware
+(``\w`` + casefold + light UK/EN inflection), so Cyrillic is not forced into
+char n-grams. Offline replay scores a call only against tool outputs that
+chronologically precede it (a tool’s own result is never a taint source for
+that call). The S3 mismatch→score scale (including the ~0.55 lite /
+~0.85 side-effect step below ``s3_min_similarity``), cascade thresholds, and
+noisy-OR weights are **unchanged** — before/after Ukrainian numbers can be
+compared honestly as a correctness fix.
 
 ```sh
 llmtest mcp-scenario-eval --out-dir runs/mcp_uk \

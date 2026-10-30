@@ -99,26 +99,67 @@ def convert_mcpsr_record(data: Dict[str, Any], *, default_id: str = "") -> Dict[
         tools_raw = []
 
     result_events = [e for e in trace if e.get("event") == "tool_result"]
-    outs = []
-    for e in result_events:
-        item = {
-            "source": str(e.get("tool_name") or e.get("name") or "tool"),
-            "content": str(e.get("content") or e.get("text") or ""),
-        }
-        if e.get("payload_file"):
-            item["payload_file"] = e.get("payload_file")
-        if e.get("untrusted") is not None:
-            item["untrusted"] = bool(e.get("untrusted"))
-        outs.append(item)
-
     calls = [e for e in trace if e.get("event") == "tool_call"]
     attack_calls = [c for c in calls if c.get("attack_step")]
     call_ev: Optional[Dict[str, Any]] = None
     if attack_calls:
         call_ev = attack_calls[0]
     elif calls:
-        # Malicious call is typically the last planned call after tool results.
+        # Malicious / primary call is typically the last planned call after
+        # prior tool results (benign weather: call then its own result).
         call_ev = calls[-1]
+
+    # Index of the selected call in the chronological event list (for
+    # before_call tagging — a call must not see its own later result as taint).
+    call_idx = -1
+    if call_ev is not None:
+        for i, e in enumerate(trace):
+            if e is call_ev:
+                call_idx = i
+                break
+        if call_idx < 0:
+            # Equality fallback when event dicts were copied.
+            for i, e in enumerate(trace):
+                if (
+                    e.get("event") == "tool_call"
+                    and str(e.get("tool_name") or e.get("name") or "")
+                    == str(call_ev.get("tool_name") or call_ev.get("name") or "")
+                    and dict(e.get("arguments") or e.get("args") or {})
+                    == dict(call_ev.get("arguments") or call_ev.get("args") or {})
+                ):
+                    call_idx = i
+                    break
+
+    outs = []
+    for e in result_events:
+        # Locate this result's position among chronological events.
+        ev_idx = -1
+        for i, te in enumerate(trace):
+            if te is e:
+                ev_idx = i
+                break
+        if ev_idx < 0:
+            for i, te in enumerate(trace):
+                if te.get("event") != "tool_result":
+                    continue
+                if str(te.get("tool_name") or te.get("name") or "") == str(
+                    e.get("tool_name") or e.get("name") or ""
+                ) and str(te.get("content") or te.get("text") or "") == str(
+                    e.get("content") or e.get("text") or ""
+                ):
+                    ev_idx = i
+                    break
+        before = True if call_idx < 0 else (ev_idx >= 0 and ev_idx < call_idx)
+        item = {
+            "source": str(e.get("tool_name") or e.get("name") or "tool"),
+            "content": str(e.get("content") or e.get("text") or ""),
+            "before_call": before,
+        }
+        if e.get("payload_file"):
+            item["payload_file"] = e.get("payload_file")
+        if e.get("untrusted") is not None:
+            item["untrusted"] = bool(e.get("untrusted"))
+        outs.append(item)
 
     attack_class = str(data.get("attack_class") or "other")
     attack_type = ATTACK_CLASS_MAP.get(attack_class, "other")

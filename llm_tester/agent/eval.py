@@ -303,12 +303,50 @@ def _record_checkpoint(stats: Dict[str, CheckpointStats], decision: GuardDecisio
         bucket.allows += 1
 
 
+def split_outputs_before_call(
+    trace: TraceStep,
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Split ``tool_outputs`` into those that chronologically precede the planned
+    call vs those that are the call's own (or later) results.
+
+    Flat ``mcp-sentinel-trace/v1`` traces often list a tool's result alongside
+    its call; replaying the result *before* the call makes S2 treat the call's
+    own output as a taint source (e.g. benign ``get_weather``). Prefer explicit
+    ``before_call`` flags (set by MSR conversion); otherwise treat the **last**
+    output whose ``source`` matches ``call.name`` as this call's own result.
+    """
+    outs = list(trace.tool_outputs or [])
+    call = trace.call
+    if not outs or call is None:
+        return outs, []
+
+    if any("before_call" in o for o in outs if isinstance(o, dict)):
+        before = [o for o in outs if bool(o.get("before_call", True))]
+        after = [o for o in outs if not bool(o.get("before_call", True))]
+        return before, after
+
+    name = str(call.name or "")
+    last_match: Optional[int] = None
+    for i, o in enumerate(outs):
+        if str((o or {}).get("source") or "") == name:
+            last_match = i
+    if last_match is None:
+        return outs, []
+    before = [o for i, o in enumerate(outs) if i != last_match]
+    after = [outs[last_match]]
+    return before, after
+
+
 def _run_trace(guard: Any, trace: TraceStep) -> TraceReplay:
     """
-    Replay T0 → T1 → T2 and collect every decision.
+    Replay T0 → T1 (prior outputs) → T2 → T1 (own/later outputs).
 
     Continues after T0 block so later stages can still be measured when a
     call is present; first_* records the earliest hit of each kind.
+
+    A call is scored only against outputs that came **before** it, so a tool's
+    own result is never a taint source for that same call.
     """
     guard.reset_session(keep_registry=False)
     guard.set_user_task(trace.user_request)
@@ -334,7 +372,8 @@ def _run_trace(guard: Any, trace: TraceStep) -> TraceReplay:
     if trace.tools_after:
         _note(guard.check_tool_registration(trace.tools_after))
 
-    for out in trace.tool_outputs:
+    before, after = split_outputs_before_call(trace)
+    for out in before:
         _note(
             guard.on_tool_output(
                 str(out.get("source", "tool")), str(out.get("content", ""))
@@ -343,6 +382,13 @@ def _run_trace(guard: Any, trace: TraceStep) -> TraceReplay:
 
     if trace.call is not None:
         _note(guard.check_tool_call(trace.call))
+
+    for out in after:
+        _note(
+            guard.on_tool_output(
+                str(out.get("source", "tool")), str(out.get("content", ""))
+            )
+        )
 
     if not decisions:
         decisions.append(
