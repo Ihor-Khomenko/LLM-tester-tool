@@ -46,6 +46,12 @@ jobs:
           llmtest guard-eval --help
           llmtest agent-bench --help
           llmtest sentinel-proxy --help
+          llmtest adaptive-attack --help
+          llmtest mcp-scenario-eval --help
           llmtest guard-eval --dataset synthetic --json
           llmtest guard-eval --dataset jsonl \
             --dataset-path llm_tester/data/agent/msr_examples.jsonl --json
+          llmtest adaptive-attack --out-dir /tmp/ci_adaptive \
+            --family a_para --defense none --limit 1 --mock --json
+          llmtest mcp-scenario-eval --out-dir /tmp/ci_mcp \
+            --limit 2 --json

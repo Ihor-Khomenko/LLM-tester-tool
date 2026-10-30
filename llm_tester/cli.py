@@ -1,7 +1,7 @@
 """Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
 ``baselines-eval``, ``agentdojo``, ``ablation``, ``guard-calibrate``,
-``grey-zone-rebuild``, ``import-mcp-sim``, ``agent-bench``, ``index``,
-``compare``, ``figures``.
+``grey-zone-rebuild``, ``import-mcp-sim``, ``adaptive-attack``,
+``mcp-scenario-eval``, ``agent-bench``, ``index``, ``compare``, ``figures``.
 """
 
 from __future__ import annotations
@@ -730,6 +730,140 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ims.add_argument("--json", action="store_true", help="Print import manifest JSON")
 
+    aa = sub.add_parser(
+        "adaptive-attack",
+        help=(
+            "Sentinel-aware adaptive attack harness (A-para/A-split/A-judge/A-iter). "
+            "CI uses --mock (scripted defense); live AgentDojo wiring is library-level. "
+            "Counts LLM calls via an optional request ledger / --run-cap."
+        ),
+    )
+    aa.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="Directory for progress.json / results.jsonl / summary.json",
+    )
+    aa.add_argument(
+        "--defense",
+        action="append",
+        dest="defenses",
+        default=None,
+        help="Defense id (repeatable). Default: none,sentinel",
+    )
+    aa.add_argument(
+        "--family",
+        action="append",
+        dest="families",
+        default=None,
+        help=(
+            "Attack family (repeatable): important_instructions|a_para|a_split|"
+            "a_judge|a_iter. Default: a_para,a_iter"
+        ),
+    )
+    aa.add_argument(
+        "--k",
+        type=int,
+        default=3,
+        help="Max adaptive tries for a_iter (default 3; use 5 for full budget)",
+    )
+    aa.add_argument("--seed", type=int, default=42)
+    aa.add_argument("--limit", type=int, default=None, help="Cap seed jobs")
+    aa.add_argument(
+        "--run-cap",
+        type=int,
+        default=None,
+        help="Hard LLM-request cap for this process (budget gate)",
+    )
+    aa.add_argument(
+        "--ledger",
+        type=Path,
+        default=None,
+        help="Optional JSON ledger path (default: runs/<date>_openrouter_ledger.json)",
+    )
+    aa.add_argument(
+        "--daily-cap",
+        type=int,
+        default=None,
+        help="Override OR_DAILY_CAP for the ledger (default 45)",
+    )
+    aa.add_argument(
+        "--mock",
+        action="store_true",
+        default=True,
+        help="Scripted offline defense (default; required for CI)",
+    )
+    aa.add_argument(
+        "--no-mock",
+        action="store_true",
+        help="Refuse to run without a custom library run_try (live path)",
+    )
+    aa.add_argument("--json", action="store_true", help="Print summary JSON")
+
+    mse = sub.add_parser(
+        "mcp-scenario-eval",
+        help=(
+            "Evaluate mcp-security-research scenarios with and without "
+            "MCP-Sentinel (ASR, utility proxies, detections). Offline by default "
+            "on the bundled fixture; optional --research-root / --input."
+        ),
+    )
+    mse.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="Directory for progress.json / results.jsonl / summary.json",
+    )
+    mse.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="MSR schema 1.0 or v1 JSONL (default: bundled mcp_sim_import_fixture)",
+    )
+    mse.add_argument(
+        "--research-root",
+        type=Path,
+        default=None,
+        help="Local mcp-security-research checkout (runs scenarios.export)",
+    )
+    mse.add_argument(
+        "--defense",
+        action="append",
+        dest="defenses",
+        default=None,
+        help="Defense id (repeatable). Default: none,sentinel",
+    )
+    mse.add_argument(
+        "--id",
+        action="append",
+        dest="scenario_ids",
+        default=None,
+        help="Restrict to scenario id(s) (repeatable)",
+    )
+    mse.add_argument("--lang", choices=["en", "uk"], default="en")
+    mse.add_argument("--limit", type=int, default=None)
+    mse.add_argument("--policy", type=Path, default=None)
+    mse.add_argument(
+        "--enable-s4",
+        action="store_true",
+        help="Enable S4 on sentinel (needs --s4-mock offline, or a live provider)",
+    )
+    mse.add_argument(
+        "--s4-mock",
+        action="store_true",
+        help="Offline MockS4Chat when --enable-s4",
+    )
+    mse.add_argument(
+        "--proxy-mode",
+        action="store_true",
+        help=(
+            "Mark summary as T0/T1/T2-comparable to sentinel-proxy "
+            "(still offline trace replay unless a live proxy is attached)"
+        ),
+    )
+    mse.add_argument("--seed", type=int, default=42)
+    mse.add_argument("--json", action="store_true", help="Print summary JSON")
+
     sp = sub.add_parser(
         "sentinel-proxy",
         help=(
@@ -1182,6 +1316,121 @@ def cmd_import_mcp_sim(args: argparse.Namespace) -> int:
         )
         print(f"Manifest: {manifest.get('manifest_path')}")
     return 0 if manifest.get("n_written", 0) > 0 else 3
+
+
+def cmd_adaptive_attack(args: argparse.Namespace) -> int:
+    from llm_tester.agent.adaptive_eval import AdaptiveEvalConfig, run_adaptive_eval
+    from llm_tester.budget.ledger import RequestLedger
+
+    if args.no_mock:
+        print(
+            "Live adaptive-attack AgentDojo wiring is research-box specific. "
+            "Use --mock for CI, or call llm_tester.attacks.adaptive.run_adaptive_job "
+            "with a custom run_try.",
+            file=sys.stderr,
+        )
+        return 2
+
+    ledger = None
+    if args.ledger is not None or args.daily_cap is not None or args.run_cap is not None:
+        kwargs: Dict[str, Any] = {}
+        if args.ledger is not None:
+            kwargs["path"] = Path(args.ledger)
+        if args.daily_cap is not None:
+            kwargs["daily_cap"] = int(args.daily_cap)
+        ledger = RequestLedger(**kwargs)
+
+    cfg = AdaptiveEvalConfig(
+        defenses=list(args.defenses) if args.defenses else ["none", "sentinel"],
+        families=list(args.families) if args.families else ["a_para", "a_iter"],
+        k=int(args.k),
+        seed=int(args.seed),
+        limit=args.limit,
+        run_cap=args.run_cap,
+        mock=True,
+    )
+    try:
+        summary = run_adaptive_eval(Path(args.out_dir), config=cfg, ledger=ledger)
+    except Exception as exc:  # noqa: BLE001
+        print(f"adaptive-attack failed: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(
+            f"adaptive-attack: {summary.get('n_results', 0)} results → "
+            f"{summary.get('results_path')}"
+        )
+        by = summary.get("by_defense") or {}
+        for name, block in by.items():
+            asr1 = (block.get("ASR@1") or {}).get("p")
+            asrk = (block.get("ASR@k") or {}).get("p")
+            print(f"  {name}: ASR@1={asr1}  ASR@k={asrk}  n={block.get('n')}")
+        est = summary.get("request_estimates") or {}
+        if est:
+            print("Request upper bounds (per job, early-stop may use fewer):")
+            for fam, sides in est.items():
+                ws = sides.get("with_sentinel") or {}
+                print(
+                    f"  {fam}+sentinel ≤ {ws.get('total_upper_bound')} "
+                    f"(agent={ws.get('agent')}, defense={ws.get('defense')}, "
+                    f"attacker={ws.get('attacker')})"
+                )
+    return 0
+
+
+def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
+    from llm_tester.agent.mcp_scenario_eval import (
+        McpScenarioEvalConfig,
+        run_mcp_scenario_eval,
+    )
+
+    cfg = McpScenarioEvalConfig(
+        defenses=list(args.defenses) if args.defenses else ["none", "sentinel"],
+        mock=True,
+        enable_s4=bool(args.enable_s4),
+        s4_mock=bool(args.s4_mock),
+        no_s4=not (args.enable_s4 or args.s4_mock),
+        limit=args.limit,
+        seed=int(args.seed),
+        proxy_mode=bool(args.proxy_mode),
+    )
+    try:
+        summary = run_mcp_scenario_eval(
+            Path(args.out_dir),
+            config=cfg,
+            input_path=args.input,
+            research_root=args.research_root,
+            policy_path=args.policy,
+            scenario_ids=args.scenario_ids,
+            lang=args.lang,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (ValueError, RuntimeError) as exc:
+        print(f"mcp-scenario-eval failed: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(
+            f"mcp-scenario-eval: {summary.get('n_scenarios', 0)} scenarios → "
+            f"{summary.get('results_path')}"
+        )
+        for name, block in (summary.get("by_defense") or {}).items():
+            asr = (block.get("asr") or {}).get("asr_with_guard")
+            util = (block.get("utility") or {}).get("utility_benign")
+            tpr = (block.get("detections") or {}).get("tpr")
+            print(f"  {name}: ASR={asr}  utility_benign={util}  TPR={tpr}")
+        est = summary.get("request_estimates") or {}
+        if est:
+            print("Request upper bounds (per scenario, defense LLM only):")
+            for key, val in est.items():
+                print(f"  {key}: ≤ {val.get('total_upper_bound')}")
+    return 0
 
 
 def cmd_agentdojo(args: argparse.Namespace) -> int:
@@ -2082,6 +2331,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_grey_zone_rebuild(args)
     if args.command == "import-mcp-sim":
         return cmd_import_mcp_sim(args)
+    if args.command == "adaptive-attack":
+        return cmd_adaptive_attack(args)
+    if args.command == "mcp-scenario-eval":
+        return cmd_mcp_scenario_eval(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
     if args.command == "sentinel-proxy":
