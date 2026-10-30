@@ -6,6 +6,9 @@ import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
+DEFAULT_MIN_N_FOR_CI = 5
+
+
 def wilson_ci(successes: int, n: int, *, z: float = 1.96) -> Dict[str, Optional[float]]:
     """Wilson score interval for a binomial proportion (95% by default)."""
     if n <= 0:
@@ -22,6 +25,32 @@ def wilson_ci(successes: int, n: int, *, z: float = 1.96) -> Dict[str, Optional[
         "low": max(0.0, (centre - margin) / denom),
         "high": min(1.0, (centre + margin) / denom),
     }
+
+
+def wilson_ci_gated(
+    successes: int,
+    n: int,
+    *,
+    min_n: int = DEFAULT_MIN_N_FOR_CI,
+    z: float = 1.96,
+) -> Dict[str, Any]:
+    """
+    Wilson CI that refuses interval endpoints when ``n < min_n``.
+
+    Point estimate ``p`` is still returned; ``low``/``high`` are null with a
+    ``refused`` reason so per-family CIs are not over-interpreted at n=1.
+    """
+    base = wilson_ci(successes, n, z=z)
+    if n < max(1, int(min_n)):
+        return {
+            **base,
+            "low": None,
+            "high": None,
+            "ci_refused": True,
+            "min_n": int(min_n),
+            "reason": f"n={n} < min_n={min_n}; Wilson CI withheld",
+        }
+    return {**base, "ci_refused": False, "min_n": int(min_n)}
 
 
 def asr_at_1(outcomes: Sequence[bool]) -> Dict[str, Any]:

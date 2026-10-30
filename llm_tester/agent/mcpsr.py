@@ -99,13 +99,17 @@ def convert_mcpsr_record(data: Dict[str, Any], *, default_id: str = "") -> Dict[
         tools_raw = []
 
     result_events = [e for e in trace if e.get("event") == "tool_result"]
-    outs = [
-        {
+    outs = []
+    for e in result_events:
+        item = {
             "source": str(e.get("tool_name") or e.get("name") or "tool"),
             "content": str(e.get("content") or e.get("text") or ""),
         }
-        for e in result_events
-    ]
+        if e.get("payload_file"):
+            item["payload_file"] = e.get("payload_file")
+        if e.get("untrusted") is not None:
+            item["untrusted"] = bool(e.get("untrusted"))
+        outs.append(item)
 
     calls = [e for e in trace if e.get("event") == "tool_call"]
     attack_calls = [c for c in calls if c.get("attack_step")]

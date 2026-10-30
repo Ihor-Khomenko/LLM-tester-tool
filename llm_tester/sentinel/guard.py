@@ -190,9 +190,19 @@ class SentinelGuard:
         if risk >= self.policy.s1_block_threshold and sanitize:
             # Mark but do not drop entirely — provenance still needed for S2.
             # Optionally strip high-signal injection phrases for downstream agent.
+            # Only label SANITIZE when the text actually changed (en+uk aware).
             sanitized = _sanitize_injection(content or "")
-            decision = Decision.SANITIZE
-            reasons.append("t1:sanitized")
+            if sanitized != (content or ""):
+                decision = Decision.SANITIZE
+                reasons.append("t1:sanitized")
+            elif risk >= self.policy.tau_high:
+                decision = Decision.BLOCK
+                reasons.append("t1:block_output")
+            else:
+                # High S1 risk but sanitizer found nothing to strip — keep
+                # ALLOW with elevated risk so cascade / T2 still see the signal.
+                decision = Decision.ALLOW
+                reasons.append("t1:sanitize_noop")
         elif risk >= self.policy.tau_high:
             decision = Decision.BLOCK
             reasons.append("t1:block_output")
@@ -358,7 +368,12 @@ class SentinelGuard:
 
 
 def _sanitize_injection(text: str) -> str:
-    """Best-effort strip of common injection wrappers (not a security boundary)."""
+    """
+    Best-effort strip of common injection wrappers (en + uk).
+
+    Not a security boundary. Returns the original string unchanged when no
+    pattern matched (callers must not label that as sanitized).
+    """
     import re
 
     patterns = [
@@ -371,11 +386,42 @@ def _sanitize_injection(text: str) -> str:
             r"ignore\s+(all\s+)?(previous|prior)\s+(instructions?|prompts?)[^\n]*",
             re.IGNORECASE,
         ),
+        # Ukrainian ignore-previous / forced-override phrasing.
+        re.compile(
+            r"ігноруй(те)?\s+(вс[іi]\s+)?попередн\w*\s+(інструкц\w*|промпт\w*)[^\n]*",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\[?\s*SYSTEM:\s*CRITICAL\s*OVERRIDE\s*\]?:?[^\n]*\n?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"УВАГА!\s*Твоє\s+(системне\s+налаштування|нове\s+завдання)[^\n]*\n?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"Ти\s+ЗАБОВ['’]?ЯЗАНИЙ[^\n]*\n?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"НЕ\s+ПИШИ\s+ЖОДНОГО\s+ТЕКСТУ[^\n]*\n?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"прихован\w*\s+інструкц\w*[^\n]*",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"do\s+not\s+(tell|inform|disclose)\s+(the\s+)?user[^\n]*",
+            re.IGNORECASE,
+        ),
     ]
     out = text
     for p in patterns:
         out = p.sub(" ", out)
-    return out.strip()
+    cleaned = re.sub(r"[ \t]{2,}", " ", out)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 def build_sentinel(

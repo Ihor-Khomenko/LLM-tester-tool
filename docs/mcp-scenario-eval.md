@@ -2,80 +2,95 @@
 
 Runs Ihor’s MCP scenarios
 ([mcp-security-research](https://github.com/Ihor-Khomenko/mcp-security-research))
-**with and without** MCP-Sentinel, reporting ASR, utility proxies, and
-Sentinel detections (first checkpoint, by attack type).
+**with and without** MCP-Sentinel.
 
-Scenarios cover tool-description poisoning, rug-pull / tool redefinition after
-approval, indirect prompt injection, and exfiltration through tool parameters
-(plus benign controls). Schema **1.0** exports are converted via the same path
-as [`import-mcp-sim`](import-mcp-sim.md).
+## Modes
+
+| `--mode` | What it measures |
+|----------|------------------|
+| `replay` (default) | **Detection on recorded traces** (TPR / FPR / miss_rate). Traces already contain the malicious call, so a passthrough defense never “stops” an attack by construction — do **not** call that ASR. |
+| `live` | An LLM agent (OpenRouter or `--mock`) runs against **mock MCP tools**. ASR without defense is a **measured** value. Budgeted via `--run-cap` / `--ledger` (same ledger as adaptive-attack). |
 
 ## Offline / CI (bundled fixture)
 
 ```sh
-# Default input: llm_tester/data/agent/mcp_sim_import_fixture.jsonl
+# Detection-on-traces (default)
 llmtest mcp-scenario-eval \
   --out-dir /tmp/mcp_eval_mock \
   --defense none --defense sentinel \
-  --proxy-mode --json
+  --lang en --proxy-mode --json
 
-# Explicit fixture / imported v1 JSONL
-llmtest import-mcp-sim \
-  --input llm_tester/data/agent/mcp_sim_import_fixture.jsonl \
-  --out /tmp/mcp_v1.jsonl
-
+# Multi-variant expansion for meaningful Wilson CIs (min_n default 5)
 llmtest mcp-scenario-eval \
-  --out-dir /tmp/mcp_eval \
-  --input /tmp/mcp_v1.jsonl
+  --out-dir /tmp/mcp_eval_var \
+  --variants 5 --min-n-for-ci 5 --lang en
+
+# Live ASR with scripted vulnerable agent (CI-safe)
+llmtest mcp-scenario-eval \
+  --out-dir /tmp/mcp_live_mock \
+  --mode live --mock --defense none --defense sentinel
 ```
 
-`--proxy-mode` marks the summary as T0/T1/T2-comparable to
-`llmtest sentinel-proxy` (same checkpoints; still offline trace replay unless
-you attach a live MCP server).
+## Language consistency (`--lang en|uk`)
 
-## From a local research checkout
+User prompts and tool outputs / payloads are **aligned** to `--lang` (default on).
+Research vault attack payloads are often Ukrainian even when export `--lang en`
+only localises the user prompt; alignment rewrites known payloads / injection
+markers so S3 intent is not artificially deflated. Use `--no-align-language` to
+disable. Thresholds are not tuned.
 
 ```sh
-llmtest mcp-scenario-eval \
-  --out-dir runs/mcp_research \
-  --research-root ../mcp-security-research \
-  --defense none --defense sentinel \
-  --lang en
+llmtest mcp-scenario-eval --out-dir runs/mcp_uk \
+  --research-root ../mcp-security-research --lang uk
+
+llmtest mcp-scenario-eval --out-dir runs/mcp_en \
+  --research-root ../mcp-security-research --lang en
 ```
 
-## Live S4 (optional)
+## Live ASR (OpenRouter, budgeted)
 
 ```sh
 export OPENROUTER_API_KEY=...   # env only — never commit
+export OR_DAILY_CAP=45
+
 llmtest mcp-scenario-eval \
-  --out-dir runs/mcp_s4 \
-  --input /tmp/mcp_v1.jsonl \
-  --enable-s4 --s4-mock          # offline judge
-# For a real judge, attach a provider through guard-eval / research-box code;
-# this command keeps CI offline by default (S1–S3, 0 LLM calls).
+  --out-dir runs/mcp_live \
+  --mode live --no-mock \
+  --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free \
+  --research-root ../mcp-security-research --lang uk \
+  --defense none --defense sentinel \
+  --run-cap 30 --daily-cap 45 \
+  --ledger runs/$(date -I)_openrouter_ledger.json \
+  --max-turns 4
 ```
 
-Proxy front-end for a live MCP server:
+### Estimated requests per scenario (upper bound)
 
-```sh
-llmtest sentinel-proxy --config proxy.yaml -- -- python -m my_mcp_server
-```
+| Mode | Agent | Defense (no S4) | Defense (S4) | Total |
+|------|-------|-----------------|--------------|-------|
+| `replay` | 0 | 0 | ≤2 | 0–2 |
+| `live` | ≤ **4** (`--max-turns`) | 0 | ≤2 | ≤ **4** (no S4) / ≤ **6** (with S4) |
 
-## Estimated requests per scenario
+Early stop / blocks reduce the bill. A 12-scenario `{none, sentinel}` live matrix
+without S4 is ≤ `12 × 2 × 4 = 96` agent requests (over two days at 45/day).
 
-| Mode | Defense LLM requests (upper bound) |
-|------|--------------------------------------|
-| `none` | **0** |
-| `sentinel` without S4 (default) | **0** (rules / taint / lite intent) |
-| `sentinel` with S4 | ≤ **2** judge calls |
+## Metrics
 
-Agent / tool LLM calls (if you drive a live agent through the proxy) are
-separate — budget them with `--max-requests` on `agent-bench` / your box runner.
-A 5-scenario offline matrix `{none, sentinel}` costs **0** OpenRouter requests.
+**Replay:** `detection.tpr` / `detection.fpr` / `detection.miss_rate`, Wilson CIs
+(refused when `n < --min-n-for-ci`), `utility.utility_benign` (benign allow rate).
+`utility_under_attack` is **not** reported (it would only be 1 − block rate).
 
-## Metrics in `summary.json`
+**Live:** measured `asr.asr` (+ Wilson), `utility.utility_benign` from agent task
+success.
 
-Per defense: `asr.*`, `utility.utility_benign` (≈ 1 − FPR),
-`utility.utility_under_attack`, `detections` (TPR/FPR, `first_detection`,
-`by_checkpoint`, `by_attack_type`). Comparison block when both `none` and
-`sentinel` are present.
+**Families:** `by_scenario_family` uses the original MSR `attack_class`
+(`path_traversal`, `guard_prefix_bypass`, `judge_evasion`, `malicious_write`, …)
+instead of the coarsened `attack_type` merge.
+
+**Keys in `results.jsonl`:** `first_detection` (and alias `first_intervention`),
+`scenario_family`.
+
+## Sanitizer (T1)
+
+`_sanitize_injection` is language-aware (en + uk). Output is labelled
+`t1:sanitized` **only** when the text actually changed.

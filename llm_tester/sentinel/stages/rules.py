@@ -21,6 +21,15 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
         0.95,
     ),
     (
+        # Ukrainian / mixed: «ігноруй попередні інструкції»
+        "ignore_previous_uk",
+        re.compile(
+            r"ігноруй(те)?\s+(вс[іi]\s+)?попередн\w*\s+(інструкц\w*|промпт\w*)",
+            re.IGNORECASE,
+        ),
+        0.95,
+    ),
+    (
         "important_tag",
         re.compile(r"<\s*/?\s*IMPORTANT\s*>", re.IGNORECASE),
         0.9,
@@ -28,10 +37,22 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
     (
         "system_override",
         re.compile(
-            r"(system\s*:\s*|\[SYSTEM\]|<<\s*SYS\s*>>)",
+            r"(system\s*:\s*|\[SYSTEM\]|<<\s*SYS\s*>>|"
+            r"SYSTEM:\s*CRITICAL\s*OVERRIDE)",
             re.IGNORECASE,
         ),
         0.85,
+    ),
+    (
+        "system_override_uk",
+        re.compile(
+            r"(системн\w+\s+налаштуван\w+\s+було\s+змінен|"
+            r"Твоє\s+ЄДИНЕ\s+завдання|"
+            r"ЗАБОВ['’]?ЯЗАНИЙ|"
+            r"ВИТІК\s+ДАНИХ)",
+            re.IGNORECASE,
+        ),
+        0.9,
     ),
     (
         "hacking_prompt",
@@ -45,6 +66,14 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
         "do_not_tell_user",
         re.compile(
             r"do\s+not\s+(tell|inform|disclose)\s+(the\s+)?user",
+            re.IGNORECASE,
+        ),
+        0.8,
+    ),
+    (
+        "do_not_tell_user_uk",
+        re.compile(
+            r"не\s+(каж|повідомл|розголошуй)\w*\s+(користувач\w*)?",
             re.IGNORECASE,
         ),
         0.8,
@@ -69,6 +98,14 @@ INJECTION_PATTERNS: Tuple[Tuple[str, re.Pattern, float], ...] = (
         "hidden_instruction",
         re.compile(
             r"(hidden|secret)\s+instruction",
+            re.IGNORECASE,
+        ),
+        0.75,
+    ),
+    (
+        "hidden_instruction_uk",
+        re.compile(
+            r"прихован\w*\s+інструкц\w*",
             re.IGNORECASE,
         ),
         0.75,

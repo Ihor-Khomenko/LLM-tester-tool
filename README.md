@@ -240,7 +240,9 @@ llmtest adaptive-attack --out-dir /tmp/adaptive_mock \
   --k 3 --limit 3 --mock
 
 # mcp-security-research scenarios w/ and w/o Sentinel (docs/mcp-scenario-eval.md)
-llmtest mcp-scenario-eval --out-dir /tmp/mcp_eval --proxy-mode
+# replay = detection-on-traces (TPR/FPR); live = measured ASR via agent + mock tools
+llmtest mcp-scenario-eval --out-dir /tmp/mcp_eval --lang en --proxy-mode
+llmtest mcp-scenario-eval --out-dir /tmp/mcp_live --mode live --mock --variants 5
 
 # Optional S3/S4 via any provider (not used in CI)
 llmtest guard-eval --dataset synthetic --enable-s4 \
