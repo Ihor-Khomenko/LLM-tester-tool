@@ -6,7 +6,7 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
 - **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
 - **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
@@ -233,6 +233,14 @@ llmtest import-mcp-sim \
   --out /tmp/mcp_sim_v1.jsonl
 # Or from a local checkout: --research-root ../mcp-security-research
 # Mapping docs: docs/import-mcp-sim.md
+
+# Adaptive attack harness (mock CI; docs/adaptive-attack.md)
+llmtest adaptive-attack --out-dir /tmp/adaptive_mock \
+  --family a_para --family a_iter --defense none --defense sentinel \
+  --k 3 --limit 3 --mock
+
+# mcp-security-research scenarios w/ and w/o Sentinel (docs/mcp-scenario-eval.md)
+llmtest mcp-scenario-eval --out-dir /tmp/mcp_eval --proxy-mode
 
 # Optional S3/S4 via any provider (not used in CI)
 llmtest guard-eval --dataset synthetic --enable-s4 \
