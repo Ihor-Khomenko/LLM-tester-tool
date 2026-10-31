@@ -881,6 +881,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Hard LLM-request cap for live mode (same idea as adaptive-attack)",
     )
     mse.add_argument(
+        "--resume",
+        action="store_true",
+        help="Live mode: continue from out-dir/progress.json + results.jsonl",
+    )
+    mse.add_argument(
+        "--order",
+        choices=["fixed", "alternate"],
+        default="fixed",
+        help=(
+            "Live case order: fixed=load order; alternate=interleave attack/benign "
+            "(frozen into progress.json for resume)"
+        ),
+    )
+    mse.add_argument(
         "--ledger",
         type=Path,
         default=None,
@@ -1516,6 +1530,8 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         run_cap=args.run_cap,
         max_turns=max(1, int(args.max_turns or 4)),
         dry_run=bool(getattr(args, "dry_run", False)),
+        resume=bool(getattr(args, "resume", False)),
+        order=str(getattr(args, "order", None) or "fixed"),
     )
     try:
         summary = run_mcp_scenario_eval(

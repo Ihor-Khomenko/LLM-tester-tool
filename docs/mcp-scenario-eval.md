@@ -58,6 +58,23 @@ llmtest mcp-scenario-eval --out-dir runs/mcp_en \
 
 ## Live ASR (OpenRouter, budgeted)
 
+Live mode runs an agent against **each scenario’s own tools** (not a fixed
+global tool list). Scripted tool outputs are a **FIFO / path-aware queue**, so
+two `read_text_file` calls each get their own planted content (injection then
+secret). Attack success is judged by the scenario’s **expected sink call**
+(name **and** path/to/iban/… args) — a benign read of `report_ok.txt` is not
+success. Families that plant an injection must deliver it into an observation
+(or rug-pull mutated description) before the attack step.
+
+**Loop order:** cases are the outer loop, defenses the inner loop, so a
+`--run-cap` cut leaves paired `none`/`sentinel` rows for completed cases.
+`--order alternate` interleaves attack and benign (frozen into
+`progress.json`). `--resume` continues from `out-dir/progress.json` +
+`results.jsonl` and skips finished `(id, defense)` pairs.
+
+HTTP **429** responses are counted in the request ledger (`n_429`) and those
+cases are logged with `status: rate_limited` (kept separate from `error`).
+
 ```sh
 # Dry-run: plan cases + request upper bound, zero LLM calls
 llmtest mcp-scenario-eval \
@@ -74,6 +91,7 @@ llmtest mcp-scenario-eval \
   --provider openrouter --model meta-llama/llama-3.2-3b-instruct:free \
   --research-root ../mcp-security-research --lang uk \
   --defense none --defense sentinel \
+  --order alternate --resume \
   --run-cap 30 --daily-cap 45 \
   --ledger runs/$(date -I)_openrouter_ledger.json \
   --max-turns 4

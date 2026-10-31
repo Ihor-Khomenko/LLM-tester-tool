@@ -22,6 +22,7 @@ class ChatResult:
     latency_s: float
     raw: Optional[Dict[str, Any]] = None
     attempts: int = 1
+    n_429: int = 0
     # Echo of sampling knobs actually sent (for S4 / Ollama determinism checks).
     request_options: Optional[Dict[str, Any]] = None
 
@@ -53,6 +54,8 @@ class LLMProvider:
         self.backoff_max = backoff_max
         # Last chat() attempt count (incl. 429 retries) for --max-requests.
         self.last_attempts: int = 0
+        # 429 responses observed during the last chat() (retries + final fail).
+        self.last_n_429: int = 0
         # Last request kwargs (incl. Ollama options) for tests / debugging.
         self.last_request_kwargs: Dict[str, Any] = {}
         # Disable the SDK's own retries so we control 429 backoff centrally.
@@ -119,6 +122,7 @@ class LLMProvider:
         self.last_request_kwargs = dict(kwargs)
 
         attempt = 0
+        n_429 = 0
         start = time.perf_counter()
         while True:
             attempt += 1
@@ -129,11 +133,13 @@ class LLMProvider:
                 content = ""
                 if response.choices:
                     content = response.choices[0].message.content or ""
+                self.last_n_429 = n_429
                 return ChatResult(
                     content=content,
                     latency_s=latency,
                     raw=response.model_dump(),
                     attempts=attempt,
+                    n_429=n_429,
                     request_options=dict(request_options),
                 )
             except (RateLimitError, APIStatusError) as exc:
@@ -141,8 +147,11 @@ class LLMProvider:
                 if status is None and hasattr(exc, "response"):
                     status = getattr(exc.response, "status_code", None)
                 is_rate_limited = isinstance(exc, RateLimitError) or status == 429
+                if is_rate_limited:
+                    n_429 += 1
                 if not is_rate_limited or attempt > self.max_retries:
                     self.last_attempts = attempt
+                    self.last_n_429 = n_429
                     raise
                 delay = self._backoff_seconds(attempt, exc)
                 time.sleep(delay)
