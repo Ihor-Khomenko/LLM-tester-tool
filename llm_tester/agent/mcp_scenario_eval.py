@@ -221,6 +221,9 @@ def plan_mcp_scenario_eval(
         seed=cfg.seed,
     )
     mode = (cfg.mode or "replay").lower().strip()
+    # Match the live run order so --dry-run --order alternate is accurate.
+    if mode == "live":
+        traces = order_traces_for_live(traces, order=cfg.order)
     planned = []
     for t in traces:
         planned.append(
@@ -251,6 +254,7 @@ def plan_mcp_scenario_eval(
     return {
         "dry_run": True,
         "mode": mode,
+        "order": cfg.order if mode == "live" else None,
         "lang": lang,
         "n_cases": len(planned),
         "n_defenses": n_def,
@@ -760,6 +764,29 @@ def _save_live_progress(out_dir: Path, progress: Dict[str, Any]) -> None:
     tmp.replace(p)
 
 
+def _is_incomplete_live_row(row: Dict[str, Any]) -> bool:
+    """
+    Budget / rate-limit cutoffs are not done — resume must retry them.
+
+    Includes ``error: max_requests`` (``--run-cap``), ledger ``BudgetExceeded``
+    surfaces, and 429 / rate_limited rows.
+    """
+    status = str(row.get("status") or "")
+    if status == "rate_limited" or bool(row.get("rate_limited")):
+        return True
+    err = row.get("error")
+    if err is None:
+        return False
+    err_s = str(err).strip().lower()
+    if err_s in {"max_requests", "budget exceeded", "budget_exceeded"}:
+        return True
+    if "budget" in err_s and "exceed" in err_s:
+        return True
+    if "daily cap" in err_s or "run cap" in err_s:
+        return True
+    return False
+
+
 def _done_keys_from_results(results_path: Path) -> set:
     done = set()
     if not results_path.is_file():
@@ -772,6 +799,8 @@ def _done_keys_from_results(results_path: Path) -> set:
             try:
                 row = json.loads(line)
             except json.JSONDecodeError:
+                continue
+            if _is_incomplete_live_row(row):
                 continue
             sid = row.get("id")
             defense = row.get("defense")
@@ -876,6 +905,23 @@ def _run_one_live_case(
     remaining = None
     if config.run_cap is not None:
         remaining = max(0, config.run_cap - run_used)
+
+    # Reserve ledger capacity *before* sending so we never drop already-sent
+    # requests when BudgetExceeded would have been raised after the fact.
+    reserved = 0
+    if ledger is not None:
+        ledger_rem = ledger.remaining()
+        if ledger_rem <= 0:
+            raise BudgetExceeded("daily cap reached")
+        # Bound the claim to this trial's possible sends (run-cap + max_turns).
+        slots = min(int(ledger_rem), int(config.max_turns))
+        if remaining is not None:
+            slots = min(slots, int(remaining))
+        if slots <= 0:
+            raise BudgetExceeded("daily cap reached")
+        reserved = ledger.reserve("agent", n=slots)
+        remaining = slots
+
     rec = run_scenario(
         scenario,
         chat,
@@ -887,10 +933,8 @@ def _run_one_live_case(
     n_429 = int(getattr(rec, "n_429", 0) or 0)
     run_used_out = run_used + used
     if ledger is not None:
-        if used:
-            ledger.record("agent", n=used)
-        for _ in range(n_429):
-            ledger.record("agent", n=0, status_code=429)
+        # Always persist what actually went out (incl. 429s); never raise here.
+        ledger.commit("agent", reserved=reserved, actual=used, n_429=n_429)
 
     is_attack = scenario.label == "attack"
     success = _live_attack_success(rec, scenario) if is_attack else False
@@ -1013,13 +1057,23 @@ def _run_live_matrix(
                 progress["stop_reason"] = "budget exceeded"
                 break
             all_rows.append(row)
-            done.add(key)
             with results_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-            if row.get("status") == "rate_limited":
+            if _is_incomplete_live_row(row):
+                # Cap / rate-limit stop: not done — resume must retry.
                 case_incomplete = True
-                progress["stop_reason"] = "rate limited (429)"
+                if row.get("status") == "rate_limited" or row.get("rate_limited"):
+                    progress["stop_reason"] = "rate limited (429)"
+                elif str(row.get("error") or "") == "max_requests":
+                    progress["stop_reason"] = (
+                        f"run cap {config.run_cap} reached"
+                        if config.run_cap is not None
+                        else "max_requests"
+                    )
+                else:
+                    progress["stop_reason"] = progress.get("stop_reason") or "incomplete trial"
                 break
+            done.add(key)
         if case_incomplete:
             # Do not advance next_index — redo this case on resume.
             _save_live_progress(out_dir, progress)
@@ -1255,19 +1309,25 @@ def run_mcp_scenario_eval(
     (out_dir / "summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
-    (out_dir / "progress.json").write_text(
-        json.dumps(
-            {
-                "n_scenarios": len(traces),
-                "defenses": list(cfg.defenses),
-                "mode": mode,
-                "done": True,
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    # Merge done=True into existing live progress — keep order / next_index /
+    # stop_reason / jobs so --resume still has a coherent checkpoint.
+    progress = _load_live_progress(out_dir) if mode == "live" else {}
+    progress.update(
+        {
+            "n_scenarios": len(traces),
+            "defenses": list(cfg.defenses),
+            "mode": mode,
+            "done": True,
+        }
     )
+    if mode == "live":
+        progress.setdefault("order", cfg.order)
+        _save_live_progress(out_dir, progress)
+    else:
+        (out_dir / "progress.json").write_text(
+            json.dumps(progress, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
     return summary
 
 

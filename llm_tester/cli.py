@@ -898,7 +898,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--ledger",
         type=Path,
         default=None,
-        help="Optional JSON ledger path for live-mode agent requests",
+        help=(
+            "Optional JSON ledger path for live-mode agent requests. "
+            "Under --mock an explicit path is required — the default "
+            "runs/<date>_openrouter_ledger.json is never opened for mocks."
+        ),
     )
     mse.add_argument(
         "--daily-cap",
@@ -1493,14 +1497,24 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Mock runs must never touch the default runs/<date>_openrouter_ledger.json.
+    # Only open a ledger under --mock when the caller passes an explicit --ledger.
     ledger = None
-    if args.ledger is not None or args.daily_cap is not None or args.run_cap is not None:
-        kwargs: Dict[str, Any] = {}
-        if args.ledger is not None:
-            kwargs["path"] = Path(args.ledger)
-        if args.daily_cap is not None:
-            kwargs["daily_cap"] = int(args.daily_cap)
-        ledger = RequestLedger(**kwargs)
+    want_budget = (
+        args.ledger is not None
+        or args.daily_cap is not None
+        or args.run_cap is not None
+    )
+    if want_budget:
+        if use_mock and args.ledger is None:
+            ledger = None
+        else:
+            kwargs: Dict[str, Any] = {}
+            if args.ledger is not None:
+                kwargs["path"] = Path(args.ledger)
+            if args.daily_cap is not None:
+                kwargs["daily_cap"] = int(args.daily_cap)
+            ledger = RequestLedger(**kwargs)
 
     provider = None
     if mode == "live" and not use_mock and args.provider:
