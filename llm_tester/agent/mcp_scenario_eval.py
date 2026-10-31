@@ -99,8 +99,33 @@ class McpScenarioEvalConfig:
     dry_run: bool = False
 
 
+# block > ask_user > sanitize > escalate > allow (mirrors eval.action_strength).
+_CHECKPOINT_ACTION_STRENGTH = {
+    "allow": 0,
+    "escalate": 1,
+    "sanitize": 2,
+    "ask_user": 3,
+    "block": 4,
+}
+
+
+def _checkpoint_action_strength(decision: Any) -> int:
+    return int(_CHECKPOINT_ACTION_STRENGTH.get(str(decision or "allow"), 0))
+
+
 def _flatten_stage_scores(decisions: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """Extract per-stage / per-checkpoint scores and reasons from decision dicts."""
+    """
+    Aggregate per-stage / per-checkpoint scores from decision dicts.
+
+    After chronological replay a checkpoint (esp. T1) may appear more than
+    once. For each checkpoint we keep:
+    * ``risk_score`` — max risk among decisions at that checkpoint
+    * ``decision`` — strongest action seen (block > sanitize > allow)
+    * ``decisions`` — full list for that checkpoint (optional detail)
+    * merged ``reasons``
+
+    Stage scores (S1–S4) already take a max; unchanged.
+    """
     by_stage: Dict[str, float] = {}
     by_checkpoint: Dict[str, Dict[str, Any]] = {}
     all_reasons: List[str] = []
@@ -113,12 +138,39 @@ def _flatten_stage_scores(decisions: Sequence[Dict[str, Any]]) -> Dict[str, Any]
         reasons = list(d.get("reasons") or [])
         all_reasons.extend(reasons)
         if cp:
-            by_checkpoint[cp] = {
+            prev = by_checkpoint.get(cp)
+            entry = {
                 "decision": decision,
                 "risk_score": risk,
-                "reasons": reasons,
+                "reasons": list(reasons),
                 "stage": d.get("stage"),
+                "decisions": [
+                    {
+                        "decision": decision,
+                        "risk_score": risk,
+                        "reasons": list(reasons),
+                        "stage": d.get("stage"),
+                    }
+                ],
             }
+            if prev is None:
+                by_checkpoint[cp] = entry
+            else:
+                prev["risk_score"] = max(float(prev.get("risk_score") or 0.0), risk)
+                if _checkpoint_action_strength(decision) >= _checkpoint_action_strength(
+                    prev.get("decision")
+                ):
+                    prev["decision"] = decision
+                    prev["stage"] = d.get("stage")
+                # Merge reasons (order-preserving unique).
+                seen_r = set(prev.get("reasons") or [])
+                merged = list(prev.get("reasons") or [])
+                for r in reasons:
+                    if r not in seen_r:
+                        seen_r.add(r)
+                        merged.append(r)
+                prev["reasons"] = merged
+                prev.setdefault("decisions", []).append(entry["decisions"][0])
         for s in d.get("stage_scores") or []:
             if not isinstance(s, dict):
                 continue

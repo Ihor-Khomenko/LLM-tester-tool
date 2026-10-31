@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from llm_tester.agent.eval import case_decisive_risk
 from llm_tester.agent.mcp_scenario_eval import (
     AllowAllGuard,
     DEFAULT_FIXTURE,
     McpScenarioEvalConfig,
+    _flatten_stage_scores,
     load_scenario_traces,
     plan_mcp_scenario_eval,
     run_mcp_scenario_eval,
@@ -42,7 +44,7 @@ from llm_tester.sentinel.guard import _sanitize_injection, build_sentinel
 from llm_tester.sentinel.policy import SentinelPolicy
 from llm_tester.sentinel.side_effects import _authorized_by_user, unrequested_resource_access
 from llm_tester.sentinel.stages.rules import RulesStage
-from llm_tester.sentinel.types import Decision, ToolCall
+from llm_tester.sentinel.types import Decision, GuardDecision, ToolCall
 
 RESEARCH = Path("/tmp/mcp-security-research")
 
@@ -302,6 +304,172 @@ def test_results_include_stage_and_checkpoint_scores(tmp_path: Path):
     assert "stage_scores" in rows[0]
     assert "checkpoint_scores" in rows[0]
     assert "reasons" in rows[0]
+
+
+def test_case_decisive_risk_is_max_not_last():
+    decisions = [
+        GuardDecision(
+            decision=Decision.SANITIZE,
+            risk_score=0.9,
+            stage="S1",
+            checkpoint="T1",
+        ),
+        GuardDecision(
+            decision=Decision.BLOCK,
+            risk_score=1.0,
+            stage="cascade",
+            checkpoint="T2",
+        ),
+        GuardDecision(
+            decision=Decision.ALLOW,
+            risk_score=0.0,
+            stage="T1",
+            checkpoint="T1",
+        ),
+    ]
+    assert case_decisive_risk(decisions) == 1.0
+    assert decisions[-1].risk_score == 0.0  # last alone would be wrong
+
+
+def test_flatten_checkpoint_scores_keeps_strongest_action_and_max_risk():
+    """Trailing T1 allow must not hide an earlier T1 sanitize."""
+    decisions = [
+        {
+            "checkpoint": "T0",
+            "decision": "allow",
+            "risk_score": 0.0,
+            "reasons": [],
+            "stage": "T0",
+            "stage_scores": [],
+        },
+        {
+            "checkpoint": "T1",
+            "decision": "sanitize",
+            "risk_score": 0.9,
+            "reasons": ["t1:sanitized"],
+            "stage": "S1",
+            "stage_scores": [{"stage": "S1", "score": 0.9, "reasons": ["s1:x"]}],
+        },
+        {
+            "checkpoint": "T2",
+            "decision": "block",
+            "risk_score": 1.0,
+            "reasons": ["s2:taint"],
+            "stage": "cascade",
+            "stage_scores": [{"stage": "S2", "score": 1.0, "reasons": []}],
+        },
+        {
+            "checkpoint": "T1",
+            "decision": "allow",
+            "risk_score": 0.0,
+            "reasons": [],
+            "stage": "T1",
+            "stage_scores": [],
+        },
+    ]
+    flat = _flatten_stage_scores(decisions)
+    t1 = flat["by_checkpoint"]["T1"]
+    assert t1["decision"] == "sanitize"
+    assert t1["risk_score"] == 0.9
+    assert "t1:sanitized" in t1["reasons"]
+    assert len(t1["decisions"]) == 2
+    assert flat["by_checkpoint"]["T2"]["decision"] == "block"
+    assert flat["by_stage"]["S1"] == 0.9
+    assert flat["by_stage"]["S2"] == 1.0
+
+
+def test_results_risk_score_and_checkpoint_aggregation_invariants(tmp_path: Path):
+    """
+    Case-level risk_score = max across decisions; checkpoint_scores keep the
+    strongest action. Does not change Sentinel scoring — reporting only.
+    """
+    root = _ensure_research()
+    policy = SentinelPolicy(enable_s4=False)
+    out = tmp_path / "agg"
+    summary = run_mcp_scenario_eval(
+        out,
+        config=McpScenarioEvalConfig(
+            defenses=["sentinel"],
+            mode="replay",
+            n_variants=5,
+            no_s4=True,
+        ),
+        research_root=root,
+        lang="uk",
+    )
+    rows = [
+        json.loads(ln)
+        for ln in (out / "results.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert rows
+    strength = {"allow": 0, "escalate": 1, "sanitize": 2, "ask_user": 3, "block": 4}
+    blocked_or_san = 0
+    for r in rows:
+        decs = r.get("decisions") or []
+        risks = [float(d.get("risk_score") or 0.0) for d in decs]
+        expected = max(risks) if risks else 0.0
+        assert float(r.get("risk_score") or 0.0) == pytest.approx(expected)
+
+        cps = r.get("checkpoint_scores") or {}
+        by_cp: dict = {}
+        for d in decs:
+            cp = str(d.get("checkpoint") or "")
+            by_cp.setdefault(cp, []).append(d)
+        for cp, group in by_cp.items():
+            agg = cps.get(cp) or {}
+            assert float(agg.get("risk_score") or 0.0) == pytest.approx(
+                max(float(d.get("risk_score") or 0.0) for d in group)
+            )
+            strongest = max(
+                group, key=lambda d: strength.get(str(d.get("decision")), 0)
+            )
+            assert agg.get("decision") == strongest.get("decision")
+            assert len(agg.get("decisions") or []) == len(group)
+
+        intervened = bool(r.get("intervened"))
+        blocked = bool(r.get("blocked"))
+        if intervened or blocked:
+            blocked_or_san += 1
+            assert float(r.get("risk_score") or 0.0) > 0.0
+            # Decisive risk must cover the intervening decision(s).
+            intervening = [
+                d
+                for d in decs
+                if str(d.get("decision")) in ("block", "ask_user", "sanitize")
+            ]
+            assert intervening
+            assert float(r.get("risk_score") or 0.0) >= max(
+                float(d.get("risk_score") or 0.0) for d in intervening
+            )
+            if blocked:
+                # Hard-block path is at/above cascade tau_high (reporting check).
+                assert float(r.get("risk_score") or 0.0) >= policy.tau_high - 1e-9
+    assert blocked_or_san >= 1
+
+    det = summary["by_defense"]["sentinel"]["detection"]
+    # Unchanged detection on this fixture (uk, variants=5): TPR 35/35, FPR 5/25.
+    assert det["tpr_wilson"]["successes"] == 35
+    assert det["tpr_wilson"]["n"] == 35
+    assert det["fpr_wilson"]["successes"] == 5
+    assert det["fpr_wilson"]["n"] == 25
+
+
+def test_replay_tpr_fpr_unchanged_en_variants(tmp_path: Path):
+    root = _ensure_research()
+    summary = run_mcp_scenario_eval(
+        tmp_path / "en",
+        config=McpScenarioEvalConfig(
+            defenses=["sentinel"], mode="replay", n_variants=5, no_s4=True
+        ),
+        research_root=root,
+        lang="en",
+    )
+    det = summary["by_defense"]["sentinel"]["detection"]
+    assert det["tpr_wilson"]["successes"] == 35
+    assert det["tpr_wilson"]["n"] == 35
+    assert det["fpr_wilson"]["successes"] == 5
+    assert det["fpr_wilson"]["n"] == 25
 
 
 def test_dry_run_plans_without_calling_guard(tmp_path: Path):
