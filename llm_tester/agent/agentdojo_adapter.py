@@ -1,4 +1,4 @@
-"""AgentDojo suite runner with MCP-Sentinel / baselines as defenses.
+"""AgentDojo suite runner with Оберіг (Oberih) / baselines as defenses.
 
 Two paths:
 
@@ -580,8 +580,10 @@ def _build_defense(
 ) -> Any:
     if name in (None, "", "none", "off"):
         return None
+    from llm_tester.sentinel.branding import is_oberih_defense
+
     sentinel_kwargs = {}
-    if name == "sentinel" and policy_path is not None:
+    if is_oberih_defense(name) and policy_path is not None:
         from llm_tester.sentinel.policy import load_policy
 
         sentinel_kwargs["policy"] = load_policy(policy_path)
@@ -1038,7 +1040,7 @@ def _note_case(summary: AgentDojoSummary, rec: AgentDojoCaseResult) -> None:
 def run_real_agentdojo_suite(
     suite_name: str,
     *,
-    defense_name: str = "sentinel",
+    defense_name: str = "oberih",
     llm_provider: Any = None,
     provider_name: Optional[str] = None,
     model: Optional[str] = None,
@@ -1266,7 +1268,7 @@ def run_agentdojo_task(
 def run_agentdojo_suite(
     tasks: Sequence[AgentDojoTask],
     *,
-    defense_name: str = "sentinel",
+    defense_name: str = "oberih",
     llm_provider: Any = None,
     policy_path: Optional[Path] = None,
 ) -> tuple[AgentDojoSummary, List[AgentDojoCaseResult]]:

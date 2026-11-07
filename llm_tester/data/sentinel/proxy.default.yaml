@@ -1,5 +1,5 @@
-# MCP-Sentinel proxy config (stdio by default; optional HTTP).
-# Thresholds mirror SentinelPolicy; ``threshold`` sets tau_high (block line).
+# Оберіг (Oberih) proxy config (stdio by default; optional HTTP).
+# Thresholds mirror OberihPolicy / SentinelPolicy; ``threshold`` sets tau_high.
 
 threshold: 0.7
 tau_low: 0.25

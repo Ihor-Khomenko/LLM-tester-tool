@@ -1,6 +1,6 @@
-# `llmtest adaptive-attack` — Sentinel-aware adaptive harness (R-A1)
+# `llmtest adaptive-attack` — Оберіг-aware adaptive harness (R-A1)
 
-Grey-box attacker that knows MCP-Sentinel’s stage design (S1–S4, noisy-OR,
+Grey-box attacker that knows Оберіг’s (formerly MCP-Sentinel) stage design (S1–S4, noisy-OR,
 public prompt shapes) but **not** thresholds or the judge model. The attacker
 controls only untrusted tool outputs and sees an end-to-end outcome bit
 (success / blocked) for up to **k** tries.

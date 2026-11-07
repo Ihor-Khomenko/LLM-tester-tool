@@ -2,7 +2,7 @@
 
 Runs Ihor’s MCP scenarios
 ([mcp-security-research](https://github.com/Ihor-Khomenko/mcp-security-research))
-**with and without** MCP-Sentinel.
+**with and without** Оберіг (Oberih; formerly MCP-Sentinel; defense id `oberih`, alias `sentinel`).
 
 ## Modes
 

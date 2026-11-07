@@ -26,7 +26,9 @@ from llm_tester.budget.ledger import BudgetExceeded, RequestLedger
 
 @dataclass
 class AdaptiveEvalConfig:
-    defenses: List[str] = field(default_factory=lambda: ["none", "sentinel"])
+    defenses: List[str] = field(
+        default_factory=lambda: ["none", "oberih"]
+    )
     families: List[str] = field(default_factory=lambda: ["a_para", "a_iter"])
     k: int = 3
     seed: int = 42
@@ -129,7 +131,7 @@ def _defense_run_try(
     """
     Build a try callable.
 
-    Mock: keyword defense for ``sentinel*``; ``none`` never blocks.
+    Mock: keyword defense for ``oberih`` / ``sentinel*``; ``none`` never blocks.
     Live path is intentionally not wired to OpenRouter here — the CLI
     documents how research boxes attach real AgentDojo pipelines.
     """
@@ -145,7 +147,7 @@ def _defense_run_try(
             agent_requests_per_try=1,
             defense_requests_per_try=0,
         )
-    # sentinel / sentinel_no_s4 / s4_only: block classic triggers; paraphrases may pass
+    # oberih / sentinel / *_no_s4 / s4_only: block classic triggers; paraphrases may pass
     return make_scripted_run_try(
         block_if_contains=("IMPORTANT!!!", "ignore previous", "<INFORMATION>"),
         succeed_unless_blocked=True,

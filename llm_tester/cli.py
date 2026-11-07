@@ -195,7 +195,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     ge = sub.add_parser(
         "guard-eval",
-        help="Evaluate MCP-Sentinel on traces (synthetic / InjecAgent / external JSONL)",
+        help=(
+            "Evaluate Оберіг (Oberih; formerly MCP-Sentinel) on traces "
+            "(synthetic / InjecAgent / external JSONL)"
+        ),
     )
     ge.add_argument(
         "--dataset",
@@ -219,7 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--policy",
         type=Path,
         default=None,
-        help="Sentinel YAML policy path",
+        help="Оберіг / Sentinel YAML policy path",
     )
     ge.add_argument(
         "--no-s1",
@@ -300,7 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
         "baselines-eval",
         help=(
             "Evaluate pluggable baselines (spotlighting / prompt_guard2 / "
-            "progent / task_shield / sentinel) on the same traces as guard-eval"
+            "progent / task_shield / oberih|sentinel) on the same traces as guard-eval"
         ),
     )
     be.add_argument(
@@ -311,9 +314,10 @@ def build_parser() -> argparse.ArgumentParser:
             "prompt_guard2",
             "progent",
             "task_shield",
+            "oberih",
             "sentinel",
         ],
-        help="Defense baseline to evaluate",
+        help="Defense baseline to evaluate (oberih canonical; sentinel alias)",
     )
     be.add_argument(
         "--dataset",
@@ -348,11 +352,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider",
         default=None,
         choices=sorted(PROVIDERS.keys()),
-        help="LLM for task_shield / sentinel S3-llm|S4 (ollama recommended)",
+        help="LLM for task_shield / oberih S3-llm|S4 (ollama recommended)",
     )
     be.add_argument("--model", default=None, help="Model id (e.g. qwen2.5:3b)")
     be.add_argument("--base-url", default=None)
-    be.add_argument("--policy", type=Path, default=None, help="Sentinel policy (baseline=sentinel)")
+    be.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="Оберіг policy (baseline=oberih|sentinel)",
+    )
     be.add_argument("--json", action="store_true")
     be.add_argument("--max-retries", type=int, default=5)
     be.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE)
@@ -369,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     adj = sub.add_parser(
         "agentdojo",
         help=(
-            "AgentDojo-style suite with MCP-Sentinel/baselines as defenses. "
+            "AgentDojo-style suite with Оберіг (Oberih)/baselines as defenses. "
             "Default --suite mock is offline; --real needs upstream AgentDojo + Ollama"
         ),
     )
@@ -380,9 +389,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     adj.add_argument(
         "--defense",
-        default="sentinel",
+        default="oberih",
         choices=[
             "none",
+            "oberih",
             "sentinel",
             "spotlighting",
             "prompt_guard2",
@@ -472,7 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ab = sub.add_parser(
         "agent-bench",
-        help="Scaffold: tool-using agent with/without MCP-Sentinel (any provider)",
+        help="Scaffold: tool-using agent with/without Оберіг (Oberih) (any provider)",
     )
     ab.add_argument(
         "--provider",
@@ -490,18 +500,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--with-guard",
         action="store_true",
         default=True,
-        help="Enable MCP-Sentinel (default)",
+        help="Enable Оберіг / Oberih guard (default; legacy: MCP-Sentinel)",
     )
     ab.add_argument(
         "--without-guard",
         action="store_true",
-        help="Run agent without sentinel",
+        help="Run agent without Оберіг",
     )
     ab.add_argument(
         "--policy",
         type=Path,
         default=None,
-        help="Sentinel YAML policy",
+        help="Оберіг YAML policy",
     )
     ab.add_argument(
         "--s3-backend",
@@ -733,7 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
     aa = sub.add_parser(
         "adaptive-attack",
         help=(
-            "Sentinel-aware adaptive attack harness (A-para/A-split/A-judge/A-iter). "
+            "Оберіг-aware adaptive attack harness (A-para/A-split/A-judge/A-iter). "
             "CI uses --mock (scripted defense); live AgentDojo wiring is library-level. "
             "Counts LLM calls via an optional request ledger / --run-cap."
         ),
@@ -749,7 +759,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="defenses",
         default=None,
-        help="Defense id (repeatable). Default: none,sentinel",
+        help="Defense id (repeatable). Default: none,oberih (alias: sentinel)",
     )
     aa.add_argument(
         "--family",
@@ -804,7 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
         "mcp-scenario-eval",
         help=(
             "Evaluate mcp-security-research scenarios with and without "
-            "MCP-Sentinel (ASR, utility proxies, detections). Offline by default "
+            "Оберіг / Oberih (ASR, utility proxies, detections). Offline by default "
             "on the bundled fixture; optional --research-root / --input."
         ),
     )
@@ -831,7 +841,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="defenses",
         default=None,
-        help="Defense id (repeatable). Default: none,sentinel",
+        help="Defense id (repeatable). Default: none,oberih (alias: sentinel)",
     )
     mse.add_argument(
         "--id",
@@ -935,7 +945,7 @@ def build_parser() -> argparse.ArgumentParser:
     mse.add_argument(
         "--enable-s4",
         action="store_true",
-        help="Enable S4 on sentinel (needs --s4-mock offline, or a live provider)",
+        help="Enable S4 on Оберіг (needs --s4-mock offline, or a live provider)",
     )
     mse.add_argument(
         "--s4-mock",
@@ -957,7 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--proxy-mode",
         action="store_true",
         help=(
-            "Mark summary as T0/T1/T2-comparable to sentinel-proxy "
+            "Mark summary as T0/T1/T2-comparable to oberih-proxy / sentinel-proxy "
             "(still offline trace replay unless a live proxy is attached)"
         ),
     )
@@ -966,9 +976,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "sentinel-proxy",
+        aliases=["oberih-proxy"],
         help=(
             "Transparent MCP proxy (stdio JSON-RPC; optional HTTP) applying "
-            "Sentinel T0/T1/T2 with block/sanitize/allow + JSONL audit"
+            "Оберіг T0/T1/T2 with block/sanitize/allow + JSONL audit "
+            "(command alias: oberih-proxy; legacy: sentinel-proxy)"
         ),
     )
     sp.add_argument(
@@ -977,7 +989,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Proxy YAML (threshold default 0.7; enable_s4; audit_log; transport)",
     )
-    sp.add_argument("--policy", type=Path, default=None, help="Full Sentinel policy YAML")
+    sp.add_argument(
+        "--policy",
+        type=Path,
+        default=None,
+        help="Full Оберіг / Sentinel policy YAML",
+    )
     sp.add_argument("--log", type=Path, default=None, help="Decision / audit JSONL path")
     sp.add_argument(
         "--audit-log",
@@ -1441,7 +1458,7 @@ def cmd_adaptive_attack(args: argparse.Namespace) -> int:
         ledger = RequestLedger(**kwargs)
 
     cfg = AdaptiveEvalConfig(
-        defenses=list(args.defenses) if args.defenses else ["none", "sentinel"],
+        defenses=list(args.defenses) if args.defenses else ["none", "oberih"],
         families=list(args.families) if args.families else ["a_para", "a_iter"],
         k=int(args.k),
         seed=int(args.seed),
@@ -1471,9 +1488,9 @@ def cmd_adaptive_attack(args: argparse.Namespace) -> int:
         if est:
             print("Request upper bounds (per job, early-stop may use fewer):")
             for fam, sides in est.items():
-                ws = sides.get("with_sentinel") or {}
+                ws = sides.get("with_sentinel") or sides.get("with_oberih") or {}
                 print(
-                    f"  {fam}+sentinel ≤ {ws.get('total_upper_bound')} "
+                    f"  {fam}+oberih ≤ {ws.get('total_upper_bound')} "
                     f"(agent={ws.get('agent')}, defense={ws.get('defense')}, "
                     f"attacker={ws.get('attacker')})"
                 )
@@ -1529,7 +1546,7 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         )
 
     cfg = McpScenarioEvalConfig(
-        defenses=list(args.defenses) if args.defenses else ["none", "sentinel"],
+        defenses=list(args.defenses) if args.defenses else ["none", "oberih"],
         mock=use_mock,
         enable_s4=bool(args.enable_s4),
         s4_mock=bool(args.s4_mock),
@@ -1778,8 +1795,10 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    from llm_tester.sentinel.branding import is_oberih_defense
+
     sentinel_kwargs: Dict[str, Any] = {}
-    if args.baseline == "sentinel":
+    if is_oberih_defense(args.baseline):
         from llm_tester.sentinel.policy import load_policy
 
         pol = load_policy(args.policy)
@@ -2518,7 +2537,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_mcp_scenario_eval(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
-    if args.command == "sentinel-proxy":
+    if args.command in ("sentinel-proxy", "oberih-proxy"):
         return cmd_sentinel_proxy(args)
     if args.command == "index":
         return cmd_index(args)

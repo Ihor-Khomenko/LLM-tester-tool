@@ -20,9 +20,18 @@ dependencies = [
 [project.optional-dependencies]
 guard = ["llm-guard"]
 datasets = ["datasets>=2.14.0"]
-# Self-contained MCP-Sentinel subpackage (extractable to mcp-sentinel later).
-# Core S1–S2 need no extras; PyYAML for policy files; mcp for proxy env helpers;
-# sentence-transformers for S3 embeddings backend.
+# Оберіг (Oberih) self-contained subpackage (package path llm_tester.sentinel;
+# formerly MCP-Sentinel). Core S1–S2 need no extras; PyYAML for policy files;
+# mcp for proxy env helpers; sentence-transformers for S3 embeddings backend.
+# ``oberih*`` extras alias the legacy ``sentinel*`` names.
+oberih = ["PyYAML>=6.0"]
+oberih-s3 = ["sentence-transformers>=2.2.0"]
+oberih-mcp = ["mcp>=1.0.0"]
+oberih-all = [
+    "PyYAML>=6.0",
+    "sentence-transformers>=2.2.0",
+    "mcp>=1.0.0",
+]
 sentinel = ["PyYAML>=6.0"]
 sentinel-s3 = ["sentence-transformers>=2.2.0"]
 sentinel-mcp = ["mcp>=1.0.0"]

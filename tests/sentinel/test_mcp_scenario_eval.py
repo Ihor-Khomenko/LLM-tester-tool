@@ -290,7 +290,8 @@ def test_cli_replay_and_live(tmp_path: Path):
     data = json.loads((out / "summary.json").read_text(encoding="utf-8"))
     assert data["config"]["mode"] == "replay"
     assert data["n_scenarios"] == 4  # 2 bases × 2 variants
-    fam_block = data["by_defense"]["sentinel"]["detection"]["by_scenario_family"]
+    # Default defense id is canonical ``oberih`` (``sentinel`` remains an alias).
+    fam_block = data["by_defense"]["oberih"]["detection"]["by_scenario_family"]
     # With n=2 per family after variants, CI still refused if min_n=5
     for fam, block in fam_block.items():
         if block.get("n_attack", 0):
