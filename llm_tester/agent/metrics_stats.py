@@ -132,17 +132,36 @@ def mcnemar_test(
     }
 
 
+def _rows_for_defense(
+    by_def: Dict[str, List[Dict[str, Any]]], name: str
+) -> List[Dict[str, Any]]:
+    """Resolve defense rows, accepting oberih↔sentinel aliases."""
+    if name in by_def:
+        return by_def[name]
+    aliases = {
+        "oberih": ("sentinel", "mcp_sentinel", "mcp-sentinel"),
+        "sentinel": ("oberih",),
+        "oberih_no_s4": ("sentinel_no_s4",),
+        "sentinel_no_s4": ("oberih_no_s4",),
+    }
+    for alt in aliases.get(name, ()):
+        if alt in by_def:
+            return by_def[alt]
+    return []
+
+
 def summarize_adaptive_results(
     jobs: Sequence[Dict[str, Any]],
     *,
     defense_a: str = "none",
-    defense_b: str = "sentinel",
+    defense_b: str = "oberih",
 ) -> Dict[str, Any]:
     """
     Aggregate a list of per-job result dicts produced by the adaptive runner.
 
     Expected keys per job: ``job_id``, ``defense``, ``try_successes`` (list[bool]),
     ``attack_success`` (bool, any-of-k), ``blocked`` (optional).
+    ``defense_b`` defaults to ``oberih``; legacy ``sentinel`` rows still pair.
     """
     by_def: Dict[str, List[Dict[str, Any]]] = {}
     for j in jobs:
@@ -162,8 +181,8 @@ def summarize_adaptive_results(
         }
 
     # Paired McNemar when both defenses present on the same job ids.
-    a_rows = {str(r.get("job_id")): r for r in by_def.get(defense_a, [])}
-    b_rows = {str(r.get("job_id")): r for r in by_def.get(defense_b, [])}
+    a_rows = {str(r.get("job_id")): r for r in _rows_for_defense(by_def, defense_a)}
+    b_rows = {str(r.get("job_id")): r for r in _rows_for_defense(by_def, defense_b)}
     shared = sorted(set(a_rows) & set(b_rows))
     if shared:
         a_succ = [bool(a_rows[i].get("attack_success")) for i in shared]

@@ -1,4 +1,5 @@
-# MCP-Sentinel default policy (research MVP).
+# Оберіг (Oberih) default policy (research MVP; formerly MCP-Sentinel).
+# Thresholds/weights unchanged — rename only.
 # Thresholds are starting points for offline calibration — not published results.
 
 tau_low: 0.25

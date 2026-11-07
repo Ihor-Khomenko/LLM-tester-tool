@@ -1,4 +1,4 @@
-"""YAML policy / thresholds for MCP-Sentinel."""
+"""YAML policy / thresholds for Оберіг (Oberih); legacy name MCP-Sentinel."""
 
 from __future__ import annotations
 
@@ -233,3 +233,7 @@ def is_sensitive_arg(name: str, sensitive: Sequence[str]) -> bool:
         if key == s_l or s_l in key or key.endswith(s_l):
             return True
     return False
+
+
+# Canonical alias (Оберіг / Oberih). Same class — thresholds unchanged.
+OberihPolicy = SentinelPolicy

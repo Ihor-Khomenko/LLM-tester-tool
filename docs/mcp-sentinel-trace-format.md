@@ -1,5 +1,8 @@
 # mcp-sentinel-trace/v1 — interchange JSONL for guard-eval
 
+> Schema id is **stable** (shared with mcp-security-research). Product rename to
+> Оберіг / Oberih does **not** change `schema_version` strings or historical files.
+
 Shared offline-eval format between:
 
 - **LLM-tester-tool** (`llmtest guard-eval --dataset jsonl --dataset-path …`)

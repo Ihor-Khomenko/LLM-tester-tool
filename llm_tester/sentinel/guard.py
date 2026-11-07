@@ -1,4 +1,4 @@
-"""In-process MCP-Sentinel guard API."""
+"""In-process Оберіг (Oberih) guard API (legacy module name: MCP-Sentinel)."""
 
 from __future__ import annotations
 
@@ -487,11 +487,12 @@ def build_sentinel(
     log_path: Optional[Union[str, Path]] = None,
     ablation: Optional[Dict[str, bool]] = None,
 ) -> SentinelGuard:
-    """Factory used by CLI and library callers.
+    """Factory used by CLI and library callers (legacy name).
 
-    ``llm_provider`` must satisfy :class:`~llm_tester.sentinel.provider.LLMChat`
-    (duck-typed). The host wires OpenAI-compatible clients (Ollama, OpenRouter,
-    xAI, Groq, OpenAI); Sentinel never imports those SDKs itself.
+    Prefer :func:`build_oberih` in new code. ``llm_provider`` must satisfy
+    :class:`~llm_tester.sentinel.provider.LLMChat` (duck-typed). The host wires
+    OpenAI-compatible clients (Ollama, OpenRouter, xAI, Groq, OpenAI); the
+    guard never imports those SDKs itself.
     """
     pol = policy or load_policy(Path(policy_path) if policy_path else None)
     if enable_s3 is not None:
@@ -506,3 +507,8 @@ def build_sentinel(
         judge_provider=judge_provider,
         log_path=log_path,
     )
+
+
+# Canonical aliases (Оберіг / Oberih). Same objects — no behavior change.
+OberihGuard = SentinelGuard
+build_oberih = build_sentinel

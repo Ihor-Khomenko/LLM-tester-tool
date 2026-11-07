@@ -6,7 +6,7 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest sentinel-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest oberih-proxy` (alias `sentinel-proxy`), `llmtest index`, `llmtest compare`, `llmtest figures`
 - **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
 - **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
@@ -19,7 +19,7 @@ For research purposes only. Use responsibly.
   - [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections) (prompt-injection set)
 - Guards: `none` or `llmguard`
 - Judges: phrase matching (default), optional Llama Guard or LLM-as-judge
-- **MCP-Sentinel** — cascaded provenance-aware guard for agentic / MCP tool use (see below)
+- **Оберіг (Oberih)** — cascaded provenance-aware guard for agentic / MCP tool use (formerly MCP-Sentinel; see below)
 - JSONL logging of **every** response (provider, model, timestamp, params, latency)
 - Rate-limit friendliness: `--max-requests`, `--delay`, 429 retry/backoff, `--resume`
 - Deterministic settings: configurable `temperature` and `seed`
@@ -41,10 +41,11 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 # Optional LLM Guard support:
 pip install -e ".[guard]"
-# MCP-Sentinel (self-contained subpackage; S1–S2 need no extras):
-pip install -e ".[sentinel]"
+# Оберіг / Oberih (self-contained subpackage; S1–S2 need no extras):
+pip install -e ".[oberih]"          # preferred
+pip install -e ".[sentinel]"        # legacy alias of [oberih]
 # Optional: S3 embeddings / MCP SDK helpers
-pip install -e ".[sentinel-all]"
+pip install -e ".[oberih-all]"      # or legacy [sentinel-all]
 # Thesis figures (matplotlib):
 pip install -e ".[figures]"
 # Optional HF detectors (torch/transformers) — kept out of the base install:
@@ -164,11 +165,13 @@ llmtest figures runs/ --out thesis_figures/ --lang uk --figure-start 1 --table-s
 
 Suggested captions follow DSTU style: **Рисунок 4.n – …** (below figures) and **Таблиця 4.n – …** (above tables).
 
-## MCP-Sentinel (agent / MCP guard)
+## Оберіг (Oberih) — agent / MCP guard
 
 Research MVP of a **cascaded provenance-aware runtime guard** that sits between an MCP host (agent) and tool servers.
 
-**Architecture:** `llm_tester/sentinel` is **self-contained** (no imports from the rest of `llm_tester` except an optional duck-typed `LLMChat` provider). Install with `pip install llm-tester[sentinel]`. Evaluation lives in `llm_tester/agent` (`guard-eval`, `agent-bench`, trace loaders) and imports the subpackage — so Sentinel can later be extracted into a standalone `mcp-sentinel` repo.
+**Names:** Ukrainian display **Оберіг**, ASCII **Oberih**, machine id `oberih`. Formerly **MCP-Sentinel**; package path `llm_tester.sentinel`, imports (`SentinelGuard`, `build_sentinel`), CLI `sentinel-proxy`, and defense id `sentinel` remain supported aliases. Trace schema `mcp-sentinel-trace/v1` is unchanged (shared with mcp-security-research).
+
+**Architecture:** `llm_tester/sentinel` is **self-contained** (no imports from the rest of `llm_tester` except an optional duck-typed `LLMChat` provider). Prefer `pip install llm-tester[oberih]` (alias `[sentinel]`). New code may `import llm_tester.oberih`. Evaluation lives in `llm_tester.agent` (`guard-eval`, `agent-bench`, trace loaders).
 
 Checkpoints:
 
@@ -188,12 +191,14 @@ Cascade stages (cheap → expensive):
 ### Library API
 
 ```python
-from llm_tester.sentinel import SentinelGuard, ToolCall, ToolSpec, build_sentinel
+from llm_tester.oberih import OberihGuard, ToolCall, ToolSpec, build_oberih
+# Legacy equivalents still work:
+# from llm_tester.sentinel import SentinelGuard, build_sentinel
 from llm_tester.agent.provider_adapter import build_llm_chat  # host-side adapter
 
 # Any OpenAI-compatible API: ollama | openai | xai | openrouter | groq
 llm = build_llm_chat("openrouter", "meta-llama/llama-3.2-3b-instruct:free")
-guard = build_sentinel(llm_provider=llm, enable_s4=True)  # S3/S4 use LLMChat
+guard = build_oberih(llm_provider=llm, enable_s4=True)  # S3/S4 use LLMChat
 guard.set_user_task("Summarise my latest email")
 guard.check_tool_registration([ToolSpec(name="gmail.read", description="Read email")])
 guard.on_tool_output("gmail.read", raw_email_text)
@@ -203,7 +208,7 @@ decision = guard.check_tool_call(
 # decision.decision, .risk_score, .stage, .reasons, .latency_ms
 ```
 
-S1–S2 are dependency-free. S3 backends: `lite` (default), `embeddings` (`[sentinel-s3]`), or `llm` (injected provider). S4 is optional and only runs in the grey zone when an `LLMChat` is injected.
+S1–S2 are dependency-free. S3 backends: `lite` (default), `embeddings` (`[oberih-s3]` / `[sentinel-s3]`), or `llm` (injected provider). S4 is optional and only runs in the grey zone when an `LLMChat` is injected.
 
 ### Offline evaluation
 
@@ -236,10 +241,11 @@ llmtest import-mcp-sim \
 
 # Adaptive attack harness (mock CI; docs/adaptive-attack.md)
 llmtest adaptive-attack --out-dir /tmp/adaptive_mock \
-  --family a_para --family a_iter --defense none --defense sentinel \
+  --family a_para --family a_iter --defense none --defense oberih \
   --k 3 --limit 3 --mock
+# (--defense sentinel still accepted)
 
-# mcp-security-research scenarios w/ and w/o Sentinel (docs/mcp-scenario-eval.md)
+# mcp-security-research scenarios w/ and w/o Оберіг (docs/mcp-scenario-eval.md)
 # replay = detection-on-traces (TPR/FPR); live = measured ASR via agent + mock tools
 llmtest mcp-scenario-eval --out-dir /tmp/mcp_eval --lang en --proxy-mode
 llmtest mcp-scenario-eval --out-dir /tmp/mcp_live --mode live --mock --variants 5
@@ -290,10 +296,10 @@ llmtest agent-bench --provider ollama --model qwen2.5:7b --without-guard \
 
 `--max-retries` defaults to **1** (avoid burning free-tier quota on 429). stderr logs `provider_requests_used`. Suites: `builtin` (benign+attack), `msr`/`jsonl`, `injecagent`, `agentdojo` (scaffold).
 
-### MCP Sentinel proxy
+### Оберіг proxy (`oberih-proxy` / alias `sentinel-proxy`)
 
 Transparent MCP proxy between a client and a real MCP server. Applies the
-Sentinel cascade at **T0** (`tools/list`), **T2** (`tools/call` request), and
+Оберіг cascade at **T0** (`tools/list`), **T2** (`tools/call` request), and
 **T1** (tool output) with **block / sanitize / allow**. Writes a JSONL audit
 log (action + `overhead_ms`). Config YAML sets `threshold` (default **0.7**)
 and optional S4 (`enable_s4: false` by default).
@@ -302,19 +308,20 @@ and optional S4 (`enable_s4: false` by default).
 
 ```sh
 # Filesystem MCP example
-llmtest sentinel-proxy \
+llmtest oberih-proxy \
   --config llm_tester/data/sentinel/proxy.default.yaml \
-  --audit-log /tmp/sentinel_audit.jsonl \
+  --audit-log /tmp/oberih_audit.jsonl \
   --user-task "List and read files under /tmp/vault only" \
   -- \
   npx -y @modelcontextprotocol/server-filesystem /tmp/vault
+# `llmtest sentinel-proxy …` remains an alias
 ```
 
 **Optional HTTP** JSON-RPC front-end (same hooks; one POST per message):
 
 ```sh
-llmtest sentinel-proxy --transport http --listen 127.0.0.1:8765 \
-  --threshold 0.7 --audit-log /tmp/sentinel_audit.jsonl -- \
+llmtest oberih-proxy --transport http --listen 127.0.0.1:8765 \
+  --threshold 0.7 --audit-log /tmp/oberih_audit.jsonl -- \
   npx -y @modelcontextprotocol/server-filesystem /tmp/vault
 ```
 
@@ -411,7 +418,9 @@ llmtest report runs/harmfulqa_ollama/results.jsonl.gz
 Суддя відмови: `--judge phrase|llamaguard|llm`.  
 Квоти: `--max-requests`, `--delay`, `--resume` (пропуск уже записаних id у results).
 
-### MCP-Sentinel (українською)
+### Оберіг (українською)
+
+Канонічна назва продукту — **Оберіг** (лат. Oberih, машинний id `oberih`). Колишня назва MCP-Sentinel; аліаси `sentinel` / `sentinel-proxy` / `llm_tester.sentinel` збережено для сумісності.
 
 Каскадний провенансно-орієнтований монітор між MCP-хостом (агентом) і серверами інструментів:
 
@@ -421,18 +430,18 @@ llmtest report runs/harmfulqa_ollama/results.jsonl.gz
 
 ```sh
 pip install -e ".[dev]"
-pip install -e ".[sentinel]"        # PyYAML для політики
-pip install -e ".[sentinel-all]"    # + embeddings + mcp
+pip install -e ".[oberih]"           # PyYAML для політики (аліас: [sentinel])
+pip install -e ".[oberih-all]"       # + embeddings + mcp
 
 llmtest guard-eval --dataset synthetic
 llmtest guard-eval --dataset jsonl --dataset-path scenarios.jsonl
 llmtest guard-eval --dataset injecagent --download-injecagent --limit 100
 llmtest agent-bench --provider openrouter \
   --model meta-llama/llama-3.2-3b-instruct:free --max-requests 20 --resume
-llmtest sentinel-proxy -- -- your-mcp-server ...
+llmtest oberih-proxy -- -- your-mcp-server ...
 ```
 
-Архітектура: `llm_tester/sentinel` — самодостатній підпакет (без імпортів з решти `llm_tester`, лише опційний інтерфейс `LLMChat`); оцінювання в `llm_tester/agent`. Формат трас: `docs/mcp-sentinel-trace-format.md` (спільний з mcp-security-research).  
+Архітектура: `llm_tester/sentinel` — самодостатній підпакет (імпорт також через `llm_tester.oberih`); оцінювання в `llm_tester/agent`. Формат трас: `docs/mcp-sentinel-trace-format.md` (спільний з mcp-security-research; назва схеми незмінна).  
 Провайдери для S3/S4 та agent-bench: `ollama`, `openai`, `xai`, `openrouter` (`:free`), `groq`.  
 API: `check_tool_registration` / `on_tool_output` / `check_tool_call`.  
 Числа з `guard-eval` — **попередні вимірювання**, не заявлені результати.

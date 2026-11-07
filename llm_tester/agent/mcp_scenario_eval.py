@@ -1,5 +1,7 @@
 """
-Evaluate mcp-security-research scenarios with and without MCP-Sentinel.
+Evaluate mcp-security-research scenarios with and without Оберіг (Oberih).
+
+Formerly MCP-Sentinel; defense id ``oberih`` (alias ``sentinel``).
 
 Two modes
 ---------
@@ -26,7 +28,15 @@ from llm_tester.agent.scenario_variants import expand_traces
 from llm_tester.agent.traces import TraceStep, load_jsonl_traces, parse_trace_record
 from llm_tester.baselines.protocol import BaseGuard, allow_decision
 from llm_tester.budget.ledger import BudgetExceeded, RequestLedger
-from llm_tester.sentinel.guard import build_sentinel
+from llm_tester.sentinel.branding import (
+    default_paired_defenses,
+    find_oberih_defense_key,
+    is_no_s4_defense,
+    is_oberih_defense,
+    is_s4_only_defense,
+    known_defense_help,
+)
+from llm_tester.sentinel.guard import build_oberih
 from llm_tester.sentinel.policy import SentinelPolicy, load_policy
 from llm_tester.sentinel.types import Checkpoint, ToolCall
 
@@ -81,7 +91,9 @@ class AllowAllGuard(BaseGuard):
 
 @dataclass
 class McpScenarioEvalConfig:
-    defenses: List[str] = field(default_factory=lambda: ["none", "sentinel"])
+    defenses: List[str] = field(
+        default_factory=lambda: list(default_paired_defenses())
+    )
     mock: bool = True
     enable_s4: bool = False
     s4_mock: bool = False
@@ -369,13 +381,14 @@ def _build_defense(
     n = (name or "none").lower().strip()
     if n in ("none", "off", "allow"):
         return AllowAllGuard()
-    if n in ("sentinel", "sentinel_no_s4", "s4_only"):
+    if is_oberih_defense(n):
+        # Behavior identical to the former sentinel|sentinel_no_s4|s4_only branch.
         pol = policy or load_policy(None)
-        if n == "sentinel_no_s4" or (
+        if is_no_s4_defense(n) or (
             config.no_s4 and not config.enable_s4 and not config.s4_mock
         ):
             pol = pol.with_ablation(no_s4=True)
-        elif n == "s4_only":
+        elif is_s4_only_defense(n):
             pol = pol.with_ablation(only_s4=True)
             pol.tau_low = -1.0
             pol.tau_high = 2.0
@@ -387,9 +400,9 @@ def _build_defense(
             from llm_tester.agent.s4_mock import MockS4Chat
 
             llm = MockS4Chat(seed=config.seed)
-        return build_sentinel(policy=pol, llm_provider=llm)
+        return build_oberih(policy=pol, llm_provider=llm)
     raise ValueError(
-        f"Unknown defense {name!r}; use none|sentinel|sentinel_no_s4|s4_only"
+        f"Unknown defense {name!r}; use {known_defense_help()}"
     )
 
 
@@ -1272,37 +1285,45 @@ def run_mcp_scenario_eval(
         "note": (
             "replay = detection-on-recorded-traces (TPR/FPR; not ASR). "
             "live = measured ASR via agent + mock MCP tools. "
-            "proxy_mode marks T0/T1/T2 parity with llmtest sentinel-proxy."
+            "proxy_mode marks T0/T1/T2 parity with llmtest oberih-proxy "
+            "(alias sentinel-proxy)."
         ),
     }
 
-    if "none" in by_defense and "sentinel" in by_defense:
+    oberih_key = find_oberih_defense_key(by_defense)
+    if "none" in by_defense and oberih_key is not None:
+        ob = by_defense[oberih_key]
         if mode == "live":
+            asr_o = (ob.get("asr") or {}).get("asr")
+            util_o = (ob.get("utility") or {}).get("utility_benign")
             summary["comparison"] = {
                 "asr_none": (by_defense["none"].get("asr") or {}).get("asr"),
-                "asr_sentinel": (by_defense["sentinel"].get("asr") or {}).get("asr"),
+                "asr_oberih": asr_o,
+                # Legacy key retained for existing notebooks / paper scripts.
+                "asr_sentinel": asr_o,
                 "utility_benign_none": (by_defense["none"].get("utility") or {}).get(
                     "utility_benign"
                 ),
-                "utility_benign_sentinel": (
-                    by_defense["sentinel"].get("utility") or {}
-                ).get("utility_benign"),
+                "utility_benign_oberih": util_o,
+                "utility_benign_sentinel": util_o,
+                "oberih_defense_key": oberih_key,
             }
         else:
+            tpr_o = (ob.get("detection") or {}).get("tpr")
+            fpr_o = (ob.get("detection") or {}).get("fpr")
+            util_o = (ob.get("utility") or {}).get("utility_benign")
             summary["comparison"] = {
                 "tpr_none": (by_defense["none"].get("detection") or {}).get("tpr"),
-                "tpr_sentinel": (by_defense["sentinel"].get("detection") or {}).get(
-                    "tpr"
-                ),
-                "fpr_sentinel": (by_defense["sentinel"].get("detection") or {}).get(
-                    "fpr"
-                ),
+                "tpr_oberih": tpr_o,
+                "tpr_sentinel": tpr_o,
+                "fpr_oberih": fpr_o,
+                "fpr_sentinel": fpr_o,
                 "utility_benign_none": (by_defense["none"].get("utility") or {}).get(
                     "utility_benign"
                 ),
-                "utility_benign_sentinel": (
-                    by_defense["sentinel"].get("utility") or {}
-                ).get("utility_benign"),
+                "utility_benign_oberih": util_o,
+                "utility_benign_sentinel": util_o,
+                "oberih_defense_key": oberih_key,
                 "note": "Replay comparison uses detection TPR/FPR, not ASR.",
             }
 
