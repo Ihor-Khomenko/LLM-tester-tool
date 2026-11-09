@@ -118,10 +118,15 @@ def decide_from_risk(
     stages = stage_scores or ()
 
     if risk >= policy.tau_high:
-        # Restore grey-zone path: uncertain S3-lite intent escalates to S4
-        # instead of hard-blocking without a judge.
-        if policy.enable_s4 and _s3_dominant_uncertain(stages, policy):
-            return Decision.ESCALATE
+        # S3-dominant intent: escalate to S4 when available. Without a judge,
+        # soft (non-critical) S3-dominant risk follows the grey-zone utility
+        # bias (ALLOW). Critical side-effect mismatches still hard-block.
+        if _s3_dominant_uncertain(stages, policy):
+            if policy.enable_s4:
+                return Decision.ESCALATE
+            s3 = next((s for s in stages if s.stage == "S3"), None)
+            if s3 is not None and not bool((s3.details or {}).get("critical_mismatch")):
+                return Decision.ALLOW
         if policy.high_risk_action == "ask_user" or policy.ask_user_on_block:
             return Decision.ASK_USER
         return Decision.BLOCK

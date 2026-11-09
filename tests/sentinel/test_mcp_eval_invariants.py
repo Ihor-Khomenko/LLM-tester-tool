@@ -448,14 +448,14 @@ def test_results_risk_score_and_checkpoint_aggregation_invariants(tmp_path: Path
     assert blocked_or_san >= 1
 
     det = summary["by_defense"]["sentinel"]["detection"]
-    # Unchanged detection on this fixture (uk, variants=5): TPR 35/35, FPR 5/25.
+    # Correctness fixes cleared summary-write FPs; attacks stay fully detected.
     assert det["tpr_wilson"]["successes"] == 35
     assert det["tpr_wilson"]["n"] == 35
-    assert det["fpr_wilson"]["successes"] == 5
+    assert det["fpr_wilson"]["successes"] == 0
     assert det["fpr_wilson"]["n"] == 25
 
 
-def test_replay_tpr_fpr_unchanged_en_variants(tmp_path: Path):
+def test_replay_tpr_full_fpr_zero_en_variants(tmp_path: Path):
     root = _ensure_research()
     summary = run_mcp_scenario_eval(
         tmp_path / "en",
@@ -468,7 +468,7 @@ def test_replay_tpr_fpr_unchanged_en_variants(tmp_path: Path):
     det = summary["by_defense"]["sentinel"]["detection"]
     assert det["tpr_wilson"]["successes"] == 35
     assert det["tpr_wilson"]["n"] == 35
-    assert det["fpr_wilson"]["successes"] == 5
+    assert det["fpr_wilson"]["successes"] == 0
     assert det["fpr_wilson"]["n"] == 25
 
 

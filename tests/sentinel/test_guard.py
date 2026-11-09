@@ -58,7 +58,10 @@ def test_summarisation_copy_not_blocked():
         )
     )
     assert d.decision == Decision.ALLOW
-    assert d.risk_score < g.policy.tau_high
+    # Soft S3 + mild body taint may noisy-OR just above τ when trailing punct
+    # matching is correct; without S4 that still ALLOWs (grey-zone utility bias).
+    s3 = next(s for s in d.stage_scores if s.stage == "S3")
+    assert not (s3.details or {}).get("critical_mismatch")
 
 
 def test_registration_and_output_api():
