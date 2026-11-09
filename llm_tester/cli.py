@@ -927,7 +927,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Live-mode agent provider (openrouter recommended); omit with --mock",
     )
     mse.add_argument("--model", default=None, help="Live-mode agent model id")
-    mse.add_argument("--base-url", default=None, help="Override provider base URL")
+    mse.add_argument(
+        "--base-url",
+        default=None,
+        help=(
+            "Override provider base URL (any OpenAI-compatible endpoint, e.g. "
+            "Ollama http://localhost:11434/v1)"
+        ),
+    )
+    mse.add_argument(
+        "--api-key",
+        default=None,
+        help=(
+            "Optional API key for the live provider (else env / provider default; "
+            "Ollama accepts any dummy key)"
+        ),
+    )
+    mse.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Optional max_tokens for the live agent provider",
+    )
     mse.add_argument(
         "--max-turns",
         type=int,
@@ -973,6 +994,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mse.add_argument("--seed", type=int, default=42)
     mse.add_argument("--json", action="store_true", help="Print summary JSON")
+
+    rsl = sub.add_parser(
+        "rescore-mcp-live",
+        help=(
+            "Re-score an existing live MCP results.jsonl with injected/strict/stock "
+            "metrics (no LLM calls). Primary metric = injected call."
+        ),
+    )
+    rsl.add_argument(
+        "--results",
+        type=Path,
+        required=True,
+        help="Path to results.jsonl (box-driver or harness live format)",
+    )
+    rsl.add_argument(
+        "--out-summary",
+        type=Path,
+        default=None,
+        help="Write summary JSON (default: <results>.rescored.summary.json)",
+    )
+    rsl.add_argument(
+        "--out-jsonl",
+        type=Path,
+        default=None,
+        help="Optional annotated results.jsonl with recomputed metric fields",
+    )
+    rsl.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="Scenario JSONL (default: bundled fixture if no --research-root)",
+    )
+    rsl.add_argument(
+        "--research-root",
+        type=Path,
+        default=None,
+        help="mcp-security-research checkout (preferred for matching live runs)",
+    )
+    rsl.add_argument(
+        "--variants",
+        type=int,
+        default=5,
+        help="Variant expansion count (must match the original live run; default 5)",
+    )
+    rsl.add_argument("--seed", type=int, default=42)
+    rsl.add_argument("--json", action="store_true", help="Print summary JSON to stdout")
 
     sp = sub.add_parser(
         "sentinel-proxy",
@@ -1541,8 +1608,11 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
             args.provider,
             args.model,
             base_url=args.base_url,
+            api_key=getattr(args, "api_key", None),
             temperature=DEFAULT_TEMPERATURE,
             seed=args.seed,
+            max_tokens=getattr(args, "max_tokens", None),
+            max_retries=0,
         )
 
     cfg = McpScenarioEvalConfig(
@@ -1612,8 +1682,13 @@ def cmd_mcp_scenario_eval(args: argparse.Namespace) -> int:
         for name, block in (summary.get("by_defense") or {}).items():
             util = (block.get("utility") or {}).get("utility_benign")
             if block.get("metric_mode") == "live_agent":
-                asr = (block.get("asr") or {}).get("asr")
-                print(f"  {name}: ASR={asr}  utility_benign={util}")
+                asr_block = block.get("asr") or {}
+                print(
+                    f"  {name}: ASR_injected(primary)={asr_block.get('asr_injected', asr_block.get('asr'))}  "
+                    f"ASR_strict={asr_block.get('asr_strict')}  "
+                    f"ASR_stock={asr_block.get('asr_stock')}  "
+                    f"utility_benign={util}"
+                )
             else:
                 det = block.get("detection") or block.get("detections") or {}
                 print(
@@ -2475,6 +2550,48 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rescore_mcp_live(args: argparse.Namespace) -> int:
+    from llm_tester.agent.rescore_live import rescore_results_file
+
+    results = Path(args.results)
+    if not results.is_file():
+        print(f"results not found: {results}", file=sys.stderr)
+        return 2
+    out_summary = args.out_summary or results.with_suffix(
+        results.suffix + ".rescored.summary.json"
+        if results.suffix
+        else ".rescored.summary.json"
+    )
+    # Prefer sibling name results.rescored.summary.json
+    if args.out_summary is None:
+        out_summary = results.parent / (results.name + ".rescored.summary.json")
+    try:
+        summary = rescore_results_file(
+            results,
+            out_summary=out_summary,
+            out_jsonl=args.out_jsonl,
+            input_path=args.input,
+            research_root=args.research_root,
+            n_variants=max(1, int(args.variants or 1)),
+            seed=int(args.seed),
+        )
+    except FileNotFoundError as exc:
+        print(f"rescore-mcp-live failed: {exc}", file=sys.stderr)
+        return 2
+    pooled = summary.get("pooled") or {}
+    print(
+        f"rescore-mcp-live: n_attack={pooled.get('n_attack')} "
+        f"injected={pooled.get('attack_successes_injected')} "
+        f"strict={pooled.get('attack_successes_strict')} "
+        f"stock={pooled.get('attack_successes_stock')} "
+        f"missing_trace={summary.get('missing_trace')} "
+        f"summary={summary.get('summary_path')}"
+    )
+    if args.json:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_figures(args: argparse.Namespace) -> int:
     from llm_tester.artifacts.run_dir import iter_run_dirs
     from llm_tester.figures.generate import generate_figures
@@ -2535,6 +2652,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_adaptive_attack(args)
     if args.command == "mcp-scenario-eval":
         return cmd_mcp_scenario_eval(args)
+    if args.command == "rescore-mcp-live":
+        return cmd_rescore_mcp_live(args)
     if args.command == "agent-bench":
         return cmd_agent_bench(args)
     if args.command in ("sentinel-proxy", "oberih-proxy"):

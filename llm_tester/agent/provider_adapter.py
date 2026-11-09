@@ -21,6 +21,7 @@ def build_llm_chat(
     model: Optional[str] = None,
     *,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     temperature: float = DEFAULT_TEMPERATURE,
     seed: Optional[int] = DEFAULT_SEED,
     max_retries: int = 5,
@@ -33,6 +34,10 @@ def build_llm_chat(
     ``LLMProvider.chat(prompt, system=...)`` already matches the ``LLMChat``
     protocol, so the instance can be passed directly to
     :func:`llm_tester.sentinel.build_sentinel`.
+
+    Any OpenAI-compatible endpoint works: pass ``provider='ollama'`` (or
+    ``openai``) with ``base_url='http://localhost:11434/v1'`` and an optional
+    ``api_key`` (Ollama accepts any dummy key; default ``ollama``).
 
     For Ollama, ``num_thread`` (and seed/temperature) are also sent under
     ``extra_body.options`` so native sampling knobs are explicit.
@@ -52,6 +57,7 @@ def build_llm_chat(
         name,
         model,
         base_url=base_url,
+        api_key=api_key,
         params=params,
         max_retries=max_retries,
     )
