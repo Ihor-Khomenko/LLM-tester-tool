@@ -17,6 +17,7 @@ from typing import Dict, Optional, Tuple
 
 from llm_tester.sentinel.policy import SentinelPolicy
 from llm_tester.sentinel.provider import LLMChat, extract_chat_text
+from llm_tester.sentinel.side_effects import _authorized_by_user, looks_like_path_arg
 from llm_tester.sentinel.tokenize import char_ngrams, tokenize
 from llm_tester.sentinel.types import StageScore, ToolCall
 
@@ -149,6 +150,31 @@ class IntentStage:
         start = time.perf_counter()
         reasons = []
         sim, details = self.similarity(user_request or "", call)
+        # Correctness: English tool-name scaffolding (``write_file(path=…)``)
+        # systematically under-scores Ukrainian (and other non-English) user
+        # requests even when the user explicitly named the sink path. Compare
+        # user text to authorised path/file argument values and keep the better
+        # similarity — scale / τ / weights unchanged.
+        user_l = (user_request or "").lower()
+        named_sinks: list = []
+        for key, raw in (call.arguments or {}).items():
+            if not looks_like_path_arg(str(key)):
+                continue
+            value = raw if isinstance(raw, str) else str(raw)
+            if value and _authorized_by_user(value, user_l):
+                named_sinks.append(value)
+        if named_sinks:
+            sink_sim, sink_details = lite_similarity(
+                user_request or "", " ".join(named_sinks)
+            )
+            details["sink_arg_similarity"] = sink_sim
+            details["sink_arg_details"] = sink_details
+            if sink_sim > sim:
+                details["similarity_before_sink_boost"] = sim
+                sim = sink_sim
+                details["backend"] = (
+                    str(details.get("backend", "lite")) + "+user_named_sink"
+                )
         min_sim = self.policy.s3_min_similarity
         if sim >= 0.99:
             mismatch = 0.0
@@ -179,13 +205,15 @@ class IntentStage:
         # Soft scoring so S3 alone often lands in the grey zone (S4 path) rather
         # than always hard-blocking. Side-effect tools get a higher but not
         # saturating scale; embeddings/llm keep full weight.
-        if sim <= min_sim and backend != "lite":
+        # Backend may be ``lite+user_named_sink`` — treat as lite for scaling.
+        backend_base = str(backend).split("+", 1)[0]
+        if sim <= min_sim and backend_base != "lite":
             scale = 1.0
             details["critical_mismatch"] = True
         elif sim <= min_sim and side_effect:
             scale = 0.85
             details["critical_mismatch"] = True
-        elif backend == "lite":
+        elif backend_base == "lite":
             scale = 0.55
         else:
             scale = 1.0

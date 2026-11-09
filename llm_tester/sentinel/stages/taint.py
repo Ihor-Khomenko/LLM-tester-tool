@@ -15,7 +15,9 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple  # Iterable used b
 
 from llm_tester.sentinel.policy import SentinelPolicy, is_sensitive_arg
 from llm_tester.sentinel.side_effects import (
+    _authorized_by_user,
     is_side_effect_tool,
+    looks_like_path_arg,
     unauthorized_sensitive_paths,
 )
 from llm_tester.sentinel.tokenize import char_ngrams
@@ -302,6 +304,20 @@ class TaintStage:
             arguments=call.arguments,
         )
 
+        # User-named write/read targets: summarising prior tool output into a
+        # path the user explicitly requested must keep body/content at the
+        # default (low) weight — escalating it to ~0.9 reintroduced the
+        # summary-write FPs the default_arg_weight was meant to avoid.
+        user_l = (self.store.user_request or "").lower()
+        user_named_path = False
+        for key, raw in (call.arguments or {}).items():
+            if not looks_like_path_arg(str(key)):
+                continue
+            value = raw if isinstance(raw, str) else str(raw)
+            if _authorized_by_user(value, user_l):
+                user_named_path = True
+                break
+
         for key, raw in (call.arguments or {}).items():
             value = raw if isinstance(raw, str) else str(raw)
             pi, detail = argument_attribution(value, self.store)
@@ -311,8 +327,14 @@ class TaintStage:
                 if sensitive
                 else self.policy.default_arg_weight
             )
-            # Non-sink taint on a side-effect tool is more serious.
-            if not sensitive and side_effect and pi >= 0.4:
+            # Non-sink taint on a side-effect tool is more serious — unless the
+            # side-effect target path was named by the user (benign summary-write).
+            if (
+                not sensitive
+                and side_effect
+                and pi >= 0.4
+                and not user_named_path
+            ):
                 weight = max(weight, 0.9)
             weighted = min(1.0, pi * weight)
             per_arg[key] = {

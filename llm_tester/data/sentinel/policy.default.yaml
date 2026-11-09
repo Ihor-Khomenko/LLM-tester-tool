@@ -65,6 +65,8 @@ s4_ambiguous_policy: defer
 
 ask_user_on_block: false
 high_risk_action: block
+# Opt-in decision-policy experiment (default preserves historical hard-block).
+soft_s3_allow_without_s4: false
 
 t0_semantic_diff_threshold: 0.35
 t0_block_on_hash_mismatch: true
