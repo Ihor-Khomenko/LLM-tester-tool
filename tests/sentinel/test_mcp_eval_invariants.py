@@ -580,6 +580,7 @@ def test_uk_paraphrase_grammar_infinitive_and_lowercase():
 def test_indirect_injection_variants_exfiltrate_not_payload_out():
     assert "payload_out.txt" not in _paths_for_family("indirect_prompt_injection")
     assert family_path_ok("indirect_prompt_injection", "/tmp/exfil.txt")
+    assert family_path_ok("indirect_prompt_injection", "creds.backup")
     assert not family_path_ok("indirect_prompt_injection", "payload_out.txt")
 
     base = parse_trace_record(
@@ -608,6 +609,8 @@ def test_indirect_injection_variants_exfiltrate_not_payload_out():
         path = str((v.call.arguments or {}).get("path") or "")
         assert family_path_ok("indirect_prompt_injection", path)
         assert "payload_out" not in path
+        # Injection text and recorded sink stay on the same /tmp retarget.
+        assert path in str(v.tool_outputs[0].get("content") or ""), (v.id, path)
 
 
 def test_none_defense_does_not_set_unchanged_sanitized_content():
