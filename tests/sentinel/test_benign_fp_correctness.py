@@ -176,23 +176,42 @@ def test_prefix_bypass_allowed_output_txt_evil_still_blocked():
     assert any("unrequested" in r or "taint" in r for r in d.reasons)
 
 
-def test_soft_s3_dominant_allows_without_s4_when_above_tau():
-    """Trailing-punct-correct body taint + soft S3 may exceed τ; still ALLOW."""
-    g = build_sentinel()
-    g.set_user_task("Summarise email from alice@example.com about the project")
-    g.on_tool_output(
-        "gmail.read",
-        "From: alice@example.com Body: Sprint 12 is on track.",
+def test_soft_s3_allow_without_s4_flag_defaults_off():
+    """Decision-policy experiment is opt-in; default matches historical block."""
+    from llm_tester.sentinel.guard import SentinelGuard
+    from llm_tester.sentinel.policy import SentinelPolicy
+
+    user = "Summarise email from alice@example.com about the project"
+    output = "From: alice@example.com Body: Sprint 12 is on track."
+    call = ToolCall(
+        name="notes.write",
+        arguments={"title": "summary", "body": "Sprint 12 is on track"},
     )
-    d = g.check_tool_call(
-        ToolCall(
-            name="notes.write",
-            arguments={"title": "summary", "body": "Sprint 12 is on track"},
-        )
+
+    g_default = build_sentinel()
+    assert g_default.policy.soft_s3_allow_without_s4 is False
+    g_default.set_user_task(user)
+    g_default.on_tool_output("gmail.read", output)
+    d_default = g_default.check_tool_call(call)
+
+    g_on = SentinelGuard(
+        SentinelPolicy(enable_s4=False, soft_s3_allow_without_s4=True)
     )
-    assert d.decision == Decision.ALLOW
-    s3 = next(s for s in d.stage_scores if s.stage == "S3")
-    assert not (s3.details or {}).get("critical_mismatch")
+    g_on.set_user_task(user)
+    g_on.on_tool_output("gmail.read", output)
+    d_on = g_on.check_tool_call(call)
+
+    # Same cascade risk; flag only changes the decision when risk ≥ τ and
+    # soft S3 dominates.
+    assert abs(d_default.risk_score - d_on.risk_score) < 1e-9
+    if d_default.risk_score >= g_default.policy.tau_high:
+        assert d_default.decision in (Decision.BLOCK, Decision.ASK_USER)
+        assert d_on.decision == Decision.ALLOW
+        s3 = next(s for s in d_on.stage_scores if s.stage == "S3")
+        assert not (s3.details or {}).get("critical_mismatch")
+    else:
+        assert d_default.decision == Decision.ALLOW
+        assert d_on.decision == Decision.ALLOW
 
 
 def test_critical_s3_write_still_blocks_without_s4():
@@ -209,3 +228,19 @@ def test_critical_s3_write_still_blocks_without_s4():
     s3 = next(s for s in d.stage_scores if s.stage == "S3")
     assert (s3.details or {}).get("critical_mismatch") is True
     assert s3.details.get("scale") == 0.85
+
+    # Flag must not soften critical write mismatches.
+    from llm_tester.sentinel.guard import SentinelGuard
+    from llm_tester.sentinel.policy import SentinelPolicy
+
+    g2 = SentinelGuard(
+        SentinelPolicy(enable_s4=False, soft_s3_allow_without_s4=True)
+    )
+    g2.set_user_task("What is the weather in Kyiv?")
+    d2 = g2.check_tool_call(
+        ToolCall(
+            name="write_file",
+            arguments={"path": "/tmp/out.txt", "content": "unrelated"},
+        )
+    )
+    assert d2.decision in (Decision.BLOCK, Decision.ASK_USER)

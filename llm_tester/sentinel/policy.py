@@ -127,6 +127,12 @@ class SentinelPolicy:
     s4_ambiguous_policy: str = "defer"
     ask_user_on_block: bool = False
 
+    # Experimental decision-policy knob (default OFF = historical behaviour).
+    # When True and S4 is disabled: soft (non-critical) S3-dominant risk at/above
+    # ``tau_high`` ALLOWs instead of hard-blocking. Does not change τ / weights /
+    # S3 scale. Opt-in only — requires explicit approval to enable in production.
+    soft_s3_allow_without_s4: bool = False
+
     # T0
     t0_semantic_diff_threshold: float = 0.35
     t0_block_on_hash_mismatch: bool = True
