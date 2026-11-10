@@ -448,11 +448,12 @@ def test_results_risk_score_and_checkpoint_aggregation_invariants(tmp_path: Path
     assert blocked_or_san >= 1
 
     det = summary["by_defense"]["sentinel"]["detection"]
-    # Correctness fixes cleared summary-write FPs; attacks stay fully detected.
-    assert det["tpr_wilson"]["successes"] == 35
-    assert det["tpr_wilson"]["n"] == 35
+    # Correctness: full TPR, zero FPR. n grows with the research catalog
+    # (incl. v6-hard); assert rates + a lower bound rather than exact counts.
+    assert det["tpr_wilson"]["n"] >= 35
+    assert det["tpr_wilson"]["successes"] == det["tpr_wilson"]["n"]
     assert det["fpr_wilson"]["successes"] == 0
-    assert det["fpr_wilson"]["n"] == 25
+    assert det["fpr_wilson"]["n"] >= 25
 
 
 def test_replay_tpr_full_fpr_zero_en_variants(tmp_path: Path):
@@ -466,10 +467,10 @@ def test_replay_tpr_full_fpr_zero_en_variants(tmp_path: Path):
         lang="en",
     )
     det = summary["by_defense"]["sentinel"]["detection"]
-    assert det["tpr_wilson"]["successes"] == 35
-    assert det["tpr_wilson"]["n"] == 35
+    assert det["tpr_wilson"]["n"] >= 35
+    assert det["tpr_wilson"]["successes"] == det["tpr_wilson"]["n"]
     assert det["fpr_wilson"]["successes"] == 0
-    assert det["fpr_wilson"]["n"] == 25
+    assert det["fpr_wilson"]["n"] >= 25
 
 
 def test_dry_run_plans_without_calling_guard(tmp_path: Path):
@@ -524,7 +525,8 @@ def test_replay_fpr_not_inflated_by_benign_variants(tmp_path: Path):
         lang="uk",
     )
     n_benign = int(summary["by_defense"]["sentinel"]["utility"]["n_benign"])
-    assert n_benign == 25  # 5 benign × 5 variants
+    assert n_benign >= 25  # ≥5 benign × 5 variants (grows with catalog / v6-hard)
+    assert summary["by_defense"]["sentinel"]["detection"]["fpr_wilson"]["successes"] == 0
 
     # Load planned traces and ensure no benign variant call uses an attack sink.
     from llm_tester.agent.mcp_scenario_eval import load_scenario_traces

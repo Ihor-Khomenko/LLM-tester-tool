@@ -103,6 +103,16 @@ whether to block/pin. Earlier harness versions advertised mutations only under
 the guard branch, so rug_pull/alias ASR on the `none` arm was structurally 0 —
 re-run those trials rather than re-score.
 
+**Success-target tool provisioning:** when a scenario’s success `call` (or
+explicit meta `required_tools` / `success_tools`) needs a filesystem read/write
+tool that is not in the registered set — including v6-hard subtle rug-pull /
+tool-alias cases that only say “open `*.dat`” without naming `read_text_file` —
+the harness adds the same neutral tool specs to `tools` and `tools_after` in
+both arms (no hint text). Alias/shadowing rows tagged `tool_poisoning` with
+`tools_after` are treated like rug-pull for this purpose. Prior none-arm
+results for `mcp-v6h-rug-subtle-001` / `mcp-v6h-alias-001` were not measurable
+(exclude from n).
+
 Re-score an older live run without new LLM calls:
 
 ```sh
