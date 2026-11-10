@@ -12,6 +12,12 @@ enable_s4: false
 # Trusted user task for provenance (also settable via --user-task).
 user_task: ""
 
+# T0 enforcement on tools/list (and tools/call to flagged names):
+#   enforce — strip flagged tools from the list returned to the client and
+#             block tools/call with a JSON-RPC error (default)
+#   warn    — legacy: pass tools through unchanged, annotate ``_sentinel`` only
+t0_mode: enforce
+
 # JSONL audit log (block / sanitize / allow + latency). Null → decisions only
 # via policy.log_path / --audit-log CLI flag.
 audit_log: null

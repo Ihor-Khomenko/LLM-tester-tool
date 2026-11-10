@@ -26,6 +26,9 @@ class ProxyConfig:
     transport: str = "stdio"  # stdio | http
     listen: str = "127.0.0.1:8765"
     backend: List[str] = field(default_factory=list)
+    # T0 enforcement: ``enforce`` strips flagged tools from tools/list and
+    # blocks tools/call to them; ``warn`` only annotates ``_sentinel`` (legacy).
+    t0_mode: str = "enforce"  # enforce | warn
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -57,6 +60,10 @@ def load_proxy_config(
     if transport not in ("stdio", "http"):
         raise ValueError(f"Unknown transport {cfg.transport!r}; use stdio|http")
     cfg.transport = transport
+    t0_mode = (cfg.t0_mode or "enforce").lower().strip()
+    if t0_mode not in ("enforce", "warn"):
+        raise ValueError(f"Unknown t0_mode {cfg.t0_mode!r}; use enforce|warn")
+    cfg.t0_mode = t0_mode
     return cfg
 
 
