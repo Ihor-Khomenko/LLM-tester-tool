@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed — Oberih real MCP proxy correctness / security
+
+* **T0 enforcement (default):** flagged tools (poisoned description, hash-pin mismatch / rug-pull on re-`tools/list` after `notifications/tools/list_changed`) are **removed** from the `tools/list` result returned to the client, and `tools/call` to a flagged name returns a JSON-RPC error (`-32001`). Opt out with `t0_mode: warn` (or `--t0-mode warn`) to restore the legacy annotate-only `_sentinel` behaviour.
+* **T1 `structuredContent`:** tool-result sanitization/blocking also covers `structuredContent` (e.g. `@modelcontextprotocol/server-filesystem` 2.2.0 text duplicates), not only `content[].text`.
+* **Shutdown:** terminate the backend (close stdin) before joining the reader thread — avoids the ~2 s join stall.
+* **Stdout locking:** host-facing writes are serialized so host↔backend threads cannot interleave JSON-RPC lines.
+* **HTTP correlation:** responses are matched by JSON-RPC `id`; notifications are skipped/recorded instead of being treated as the next reply (no desync).
+* **Env hygiene without `mcp`:** backends always get a minimal sanitized environment (PATH/HOME/locale/… whitelist; never `*_KEY` / `*_TOKEN` / `*SECRET*` / `OPENAI_*` / `OPENROUTER_*` / …), mirroring `get_default_environment`.
+
 ### Fixed — MCP live harness correctness (Oberih research)
 
 * **v6-hard rug-subtle / alias none-arm not measurable:** `mcp-v6h-rug-subtle-001` and `mcp-v6h-alias-001` never offered a filesystem read tool in the live harness. Subtle rug-pull descriptions say “open ops_restore_bundle.dat” without naming `read_text_file`, and the alias case is tagged `tool_poisoning` (not `rug_pull`), so the old name-in-description + rug_pull-only provisioner added nothing. Target-tool provisioning is now scenario-driven (explicit `required_tools` / success `call`, with filename / mutation heuristics as fallback) and keeps the same reachable tool set on both arms. **Previous none-arm results for these two scenarios were not measurable and should be excluded from n**; re-run after this fix. Std `mcp-rug-pull-tool-desc-001` was already fine after the prior delivery fix.

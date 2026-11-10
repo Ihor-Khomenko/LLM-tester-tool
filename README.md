@@ -304,6 +304,17 @@ Transparent MCP proxy between a client and a real MCP server. Applies the
 log (action + `overhead_ms`). Config YAML sets `threshold` (default **0.7**)
 and optional S4 (`enable_s4: false` by default).
 
+**T0 enforcement (default `t0_mode: enforce`):** tools flagged at registration
+(poisoned description, hash-pin mismatch / rug-pull after
+`notifications/tools/list_changed` → re-list) are **stripped** from the
+`tools/list` payload returned to the client, and `tools/call` to those names
+fails with a JSON-RPC error. Set `t0_mode: warn` (or `--t0-mode warn`) for the
+legacy annotate-only `_sentinel` behaviour. **T1** also sanitizes
+`structuredContent` (not only `content[].text`). Backend subprocesses always
+receive a minimal sanitized environment (no API keys), even without the `mcp`
+package. Stdio host writes are locked; HTTP mode correlates backend replies by
+JSON-RPC `id` so notifications do not desync the session.
+
 **stdio (default)** — point your MCP host at this process instead of the backend:
 
 ```sh
@@ -326,8 +337,8 @@ llmtest oberih-proxy --transport http --listen 127.0.0.1:8765 \
 ```
 
 Default proxy config: `llm_tester/data/sentinel/proxy.default.yaml`. Core relay
-is dependency-free; optional `mcp` package improves stdio env hygiene. Not a
-full FastMCP re-implementation.
+is dependency-free (sanitized stdio env is built in). Not a full FastMCP
+re-implementation.
 
 ### Policy
 

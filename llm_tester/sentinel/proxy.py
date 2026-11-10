@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import select
 import subprocess
 import sys
@@ -34,7 +36,7 @@ import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from llm_tester.sentinel.guard import SentinelGuard, build_sentinel
 from llm_tester.sentinel.policy import load_policy
@@ -60,16 +62,78 @@ def _mcp_available() -> bool:
         return False
 
 
-def spawn_backend(command: Sequence[str]) -> subprocess.Popen:
-    """Spawn backend MCP server; prefer mcp StdioServerParameters env hygiene."""
-    env = None
-    if _mcp_available():
-        try:
-            from mcp.client.stdio import get_default_environment
+# Mirror mcp.client.stdio.get_default_environment (+ locale / TZ). Always used
+# so backends never inherit API keys when the ``mcp`` package is absent.
+_DEFAULT_INHERITED_ENV_VARS = (
+    (
+        "APPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "USERNAME",
+        "USERPROFILE",
+    )
+    if sys.platform == "win32"
+    else (
+        "HOME",
+        "LOGNAME",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "USER",
+    )
+)
+# Locale / timezone — safe, needed by many CLIs; not in upstream mcp list.
+_EXTRA_SAFE_ENV_VARS = (
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LANGUAGE",
+    "TZ",
+    "TMPDIR",
+)
+_SECRET_ENV_RE = re.compile(
+    r"(?:_KEY|_TOKEN|SECRET|PASSWORD|PASSWD|OPENAI_|REQUESTY_|OPENROUTER_|"
+    r"ANTHROPIC_|GROQ_|XAI_|HF_|AWS_|GOOGLE_)",
+    re.I,
+)
 
-            env = get_default_environment()
-        except Exception:
-            env = None
+
+def get_sanitized_backend_environment(
+    *,
+    source: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """
+    Minimal env for MCP backend subprocesses (no API keys / tokens).
+
+    Whitelists PATH/HOME/locale (and Windows equivalents), mirroring
+    ``mcp.client.stdio.get_default_environment``, then drops any name that
+    still looks like a secret. Does **not** require the ``mcp`` package.
+    """
+    src = source if source is not None else os.environ
+    env: Dict[str, str] = {}
+    for key in _DEFAULT_INHERITED_ENV_VARS + _EXTRA_SAFE_ENV_VARS:
+        value = src.get(key)
+        if value is None:
+            continue
+        if value.startswith("()"):
+            continue
+        if _SECRET_ENV_RE.search(key):
+            continue
+        env[key] = value
+    return env
+
+
+def spawn_backend(command: Sequence[str]) -> subprocess.Popen:
+    """Spawn backend MCP server with a sanitized environment (no secret leak)."""
+    env = get_sanitized_backend_environment()
     return subprocess.Popen(
         list(command),
         stdin=subprocess.PIPE,
@@ -155,8 +219,25 @@ class SentinelProxy:
         )
         self._pending_calls: Dict[Any, ToolCall] = {}
         self._proc: Optional[subprocess.Popen] = None
+        # Tools flagged at T0 (poison / hash mismatch / rug-pull); blocked on call
+        # when ``t0_mode=enforce``.
+        self._t0_flagged_tools: Set[str] = set()
+        self._stdout_lock = threading.Lock()
+        # HTTP: stash out-of-order responses / skip notifications without desync.
+        self._http_stash: Dict[Any, Dict[str, Any]] = {}
+        self._http_notifications: List[Dict[str, Any]] = []
         # Cumulative guard overhead (ms) for tests / metrics.
         self.overhead_ms: float = 0.0
+
+    @property
+    def t0_enforce(self) -> bool:
+        return (self.config.t0_mode or "enforce").lower().strip() != "warn"
+
+    def _write_host(self, data: bytes) -> None:
+        """Serialize all writes to the client stdout (stdio mode)."""
+        with self._stdout_lock:
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
 
     def _audit_decision(
         self,
@@ -185,6 +266,31 @@ class SentinelProxy:
             **extra,
         )
 
+    def _per_tool_risk(self, entry: Dict[str, Any]) -> float:
+        """Reconstruct per-tool risk from ``check_tool_registration`` meta."""
+        t0 = entry.get("t0") if isinstance(entry.get("t0"), dict) else {}
+        s1 = entry.get("s1") if isinstance(entry.get("s1"), dict) else {}
+        risk = float(s1.get("score") or 0.0)
+        if t0.get("poison_phrases"):
+            risk = max(risk, 0.95)
+        if t0.get("action") == "hash_mismatch":
+            dist = float(t0.get("semantic_distance") or 0.0)
+            thr = float(
+                getattr(self.guard.policy, "t0_semantic_diff_threshold", 0.35) or 0.35
+            )
+            if dist >= thr:
+                risk = max(risk, min(1.0, 0.5 + dist))
+            else:
+                risk = max(risk, 0.4)
+            if getattr(self.guard.policy, "t0_block_on_hash_mismatch", True):
+                risk = max(risk, 0.8)
+        return float(min(1.0, risk))
+
+    def _tool_is_flagged(self, risk: float) -> bool:
+        """Match T0 cascade: anything above ``tau_low`` is non-ALLOW."""
+        tau_low = float(getattr(self.guard.policy, "tau_low", 0.25) or 0.25)
+        return risk > tau_low
+
     def _handle_host_message(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Return a response to send to the host instead of forwarding, or None."""
         method = msg.get("method")
@@ -193,6 +299,25 @@ class SentinelProxy:
         params = msg.get("params") or {}
         name = str(params.get("name", ""))
         arguments = dict(params.get("arguments") or {})
+
+        # T0 enforce: refuse calls to tools stripped/flagged at registration.
+        if self.t0_enforce and name in self._t0_flagged_tools:
+            self.audit.log(
+                event="t0_call_blocked",
+                checkpoint="T0",
+                tool=name,
+                action="block",
+                risk_score=None,
+                reasons=["t0:flagged_tool"],
+                overhead_ms=0.0,
+            )
+            return _error_response(
+                msg.get("id"),
+                -32001,
+                f"Oberih blocked tool call '{name}': flagged at T0 "
+                "(poisoned description / hash pin mismatch / rug-pull)",
+            )
+
         call = ToolCall(name=name, arguments=arguments)
         t0 = time.perf_counter()
         decision = self.guard.check_tool_call(call)
@@ -206,11 +331,11 @@ class SentinelProxy:
             arguments=arguments,
         )
         if decision.decision in (Decision.BLOCK, Decision.ASK_USER):
-            reasons = "; ".join(decision.reasons) or "blocked by MCP-Sentinel"
+            reasons = "; ".join(decision.reasons) or "blocked by Oberih"
             return _error_response(
                 msg.get("id"),
                 -32001,
-                f"MCP-Sentinel blocked tool call '{name}': {reasons} "
+                f"Oberih blocked tool call '{name}': {reasons} "
                 f"(risk={decision.risk_score:.2f}, stage={decision.stage})",
             )
         # Allow / sanitize path: remember id for T1 on response.
@@ -218,9 +343,56 @@ class SentinelProxy:
             self._pending_calls[msg["id"]] = call
         return None
 
+    def _apply_t0_to_tools_list(
+        self,
+        msg: Dict[str, Any],
+        *,
+        tools_raw: List[Any],
+        reg: Any,
+    ) -> Dict[str, Any]:
+        """Strip or annotate flagged tools on a tools/list result."""
+        result = dict(msg.get("result") or {})
+        flagged: List[str] = []
+        kept: List[Any] = []
+        details_by_name = {
+            str(e.get("name") or ""): e
+            for e in (reg.meta or {}).get("tools") or []
+            if isinstance(e, dict)
+        }
+        for t in tools_raw:
+            if not isinstance(t, dict):
+                kept.append(t)
+                continue
+            name = str(t.get("name") or "")
+            entry = details_by_name.get(name) or {"name": name, "t0": {}, "s1": {}}
+            risk = self._per_tool_risk(entry)
+            if self._tool_is_flagged(risk):
+                flagged.append(name)
+                self._t0_flagged_tools.add(name)
+            else:
+                kept.append(t)
+                # Recovered / clean re-list: allow again if previously flagged.
+                self._t0_flagged_tools.discard(name)
+
+        result["tools"] = kept if self.t0_enforce else list(tools_raw)
+        if flagged or reg.decision in (Decision.BLOCK, Decision.ASK_USER):
+            result["_sentinel"] = {
+                "decision": reg.decision.value,
+                "risk": reg.risk_score,
+                "reasons": list(reg.reasons or []),
+                "action": "strip" if (self.t0_enforce and flagged) else "warn",
+                "flagged_tools": flagged,
+                "t0_mode": "enforce" if self.t0_enforce else "warn",
+                "removed": bool(self.t0_enforce and flagged),
+            }
+        out = dict(msg)
+        out["result"] = result
+        return out
+
     def _handle_backend_message(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         """Possibly mutate backend → host messages (T0 / T1)."""
         result = msg.get("result")
+        # tools/list (and re-list after notifications/tools/list_changed)
         if isinstance(result, dict) and "tools" in result and "id" in msg:
             tools_raw = result.get("tools") or []
             specs = []
@@ -245,17 +417,11 @@ class SentinelProxy:
                     tool=",".join(s.name for s in specs),
                     overhead_ms=overhead,
                     n_tools=len(specs),
+                    t0_mode="enforce" if self.t0_enforce else "warn",
                 )
-                if reg.decision == Decision.BLOCK:
-                    result = dict(result)
-                    result["_sentinel"] = {
-                        "decision": reg.decision.value,
-                        "risk": reg.risk_score,
-                        "reasons": reg.reasons,
-                        "action": "block",
-                    }
-                    msg = dict(msg)
-                    msg["result"] = result
+                msg = self._apply_t0_to_tools_list(
+                    msg, tools_raw=list(tools_raw), reg=reg
+                )
 
         req_id = msg.get("id")
         if req_id in self._pending_calls and "result" in msg:
@@ -284,7 +450,7 @@ class SentinelProxy:
                 return _error_response(
                     req_id,
                     -32002,
-                    f"MCP-Sentinel blocked tool output from '{call.name}': "
+                    f"Oberih blocked tool output from '{call.name}': "
                     + "; ".join(t1.reasons),
                 )
         return msg
@@ -306,6 +472,27 @@ class SentinelProxy:
         backend_resp = backend_handler(host_msg)
         return self._handle_backend_message(backend_resp)
 
+    def _terminate_backend(self, *, wait_s: float = 0.5) -> None:
+        """Close stdin + terminate backend so reader threads unblock quickly."""
+        proc = self._proc
+        if proc is None:
+            return
+        try:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+        except Exception:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=wait_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    pass
+
     def run(self) -> int:
         if not self.backend_cmd:
             raise RuntimeError("Backend command required for stdio proxy")
@@ -323,16 +510,23 @@ class SentinelProxy:
                     break
                 msg = _parse_line(line)
                 if msg is None:
-                    self._proc.stdin.write(line)
-                    self._proc.stdin.flush()
+                    try:
+                        self._proc.stdin.write(line)
+                        self._proc.stdin.flush()
+                    except (BrokenPipeError, ValueError):
+                        stop.set()
+                        break
                     continue
                 replacement = self._handle_host_message(msg)
                 if replacement is not None:
-                    sys.stdout.buffer.write(_encode(replacement))
-                    sys.stdout.buffer.flush()
+                    self._write_host(_encode(replacement))
                     continue
-                self._proc.stdin.write(_encode(msg))
-                self._proc.stdin.flush()
+                try:
+                    self._proc.stdin.write(_encode(msg))
+                    self._proc.stdin.flush()
+                except (BrokenPipeError, ValueError):
+                    stop.set()
+                    break
 
         def backend_to_host() -> None:
             assert self._proc and self._proc.stdout
@@ -343,37 +537,91 @@ class SentinelProxy:
                     break
                 msg = _parse_line(line)
                 if msg is None:
-                    sys.stdout.buffer.write(line)
-                    sys.stdout.buffer.flush()
+                    self._write_host(line)
                     continue
                 out = self._handle_backend_message(msg)
-                sys.stdout.buffer.write(_encode(out))
-                sys.stdout.buffer.flush()
+                self._write_host(_encode(out))
 
-        t1 = threading.Thread(target=host_to_backend, name="host→backend", daemon=True)
-        t2 = threading.Thread(target=backend_to_host, name="backend→host", daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        stop.set()
-        t2.join(timeout=2.0)
-        if self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+        t_host = threading.Thread(
+            target=host_to_backend, name="host→backend", daemon=True
+        )
+        t_backend = threading.Thread(
+            target=backend_to_host, name="backend→host", daemon=True
+        )
+        t_host.start()
+        t_backend.start()
+        try:
+            t_host.join()
+        finally:
+            stop.set()
+            # Terminate backend first so stdout readline returns immediately
+            # instead of waiting up to join timeout on a live pipe.
+            self._terminate_backend(wait_s=0.5)
+            t_backend.join(timeout=0.2)
         self.guard.logger.close()
         self.audit.close()
-        return self._proc.returncode or 0
+        return int(self._proc.returncode or 0)
+
+    def _is_jsonrpc_notification(self, msg: Dict[str, Any]) -> bool:
+        """True for JSON-RPC notifications (method, no response id)."""
+        if "method" not in msg:
+            return False
+        if "result" in msg or "error" in msg:
+            return False
+        return "id" not in msg or msg.get("id") is None
+
+    def _read_correlated_backend_response(
+        self, req_id: Any, *, max_lines: int = 64
+    ) -> Dict[str, Any]:
+        """
+        Read backend stdout until the JSON-RPC response for ``req_id`` arrives.
+
+        Notifications are recorded (and not treated as the response). Out-of-order
+        responses for other ids are stashed for a later request.
+        """
+        if req_id in self._http_stash:
+            return self._handle_backend_message(self._http_stash.pop(req_id))
+
+        assert self._proc and self._proc.stdout
+        for _ in range(max_lines):
+            line = self._proc.stdout.readline()
+            if not line:
+                break
+            backend_msg = _parse_line(line)
+            if backend_msg is None:
+                continue
+            if self._is_jsonrpc_notification(backend_msg):
+                self._http_notifications.append(backend_msg)
+                self.audit.log(
+                    event="backend_notification",
+                    checkpoint="proxy",
+                    tool="",
+                    action="forward_skip_http",
+                    risk_score=None,
+                    reasons=[str(backend_msg.get("method") or "notification")],
+                    overhead_ms=0.0,
+                    method=backend_msg.get("method"),
+                )
+                continue
+            mid = backend_msg.get("id")
+            if mid == req_id:
+                return self._handle_backend_message(backend_msg)
+            if mid is not None:
+                self._http_stash[mid] = backend_msg
+        return _error_response(
+            req_id,
+            -32000,
+            "Oberih proxy: timed out waiting for backend response "
+            f"(id={req_id!r})",
+        )
 
     def run_http(self, host: str = "127.0.0.1", port: int = 8765) -> int:
         """
         Optional HTTP JSON-RPC front-end (one POST = one MCP message).
 
         Spawns the stdio backend and relays each HTTP POST body through the
-        same T0/T1/T2 hooks. Suitable for clients that speak MCP-over-HTTP
-        JSON-RPC (streamable-HTTP compatible request/response).
+        same T0/T1/T2 hooks. Correlates backend responses by JSON-RPC id so
+        interleaved notifications do not desync the session.
         """
         if not self.backend_cmd:
             raise RuntimeError("Backend command required for HTTP proxy")
@@ -404,9 +652,11 @@ class SentinelProxy:
                         assert proxy._proc and proxy._proc.stdin and proxy._proc.stdout
                         proxy._proc.stdin.write(_encode(msg))
                         proxy._proc.stdin.flush()
-                        line = proxy._proc.stdout.readline()
-                        backend_msg = _parse_line(line) or {}
-                        out = proxy._handle_backend_message(backend_msg)
+                        if "id" not in msg:
+                            # Client notification — no correlated response.
+                            out = {"jsonrpc": "2.0", "result": {"ok": True}}
+                        else:
+                            out = proxy._read_correlated_backend_response(msg.get("id"))
                 payload = json.dumps(out, ensure_ascii=False).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -426,11 +676,29 @@ class SentinelProxy:
             pass
         finally:
             server.server_close()
-            if self._proc and self._proc.poll() is None:
-                self._proc.terminate()
+            self._terminate_backend(wait_s=0.5)
             self.guard.logger.close()
             self.audit.close()
         return 0
+
+
+def _structured_content_text(structured: Any) -> str:
+    if structured is None:
+        return ""
+    if isinstance(structured, str):
+        return structured
+    if isinstance(structured, dict):
+        parts: List[str] = []
+        for key in ("text", "content", "message", "data"):
+            val = structured.get(key)
+            if isinstance(val, str):
+                parts.append(val)
+        if parts:
+            return "\n".join(parts)
+        return json.dumps(structured, ensure_ascii=False)
+    if isinstance(structured, list):
+        return "\n".join(_structured_content_text(x) for x in structured)
+    return str(structured)
 
 
 def _extract_text_content(result: Any) -> str:
@@ -439,19 +707,42 @@ def _extract_text_content(result: Any) -> str:
     if isinstance(result, str):
         return result
     if isinstance(result, dict):
+        parts: List[str] = []
         content = result.get("content")
         if isinstance(content, list):
-            parts = []
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
                     parts.append(str(block.get("text", "")))
                 else:
                     parts.append(str(block))
+        elif "text" in result:
+            parts.append(str(result["text"]))
+        # server-filesystem ≥2.x duplicates body in structuredContent — scan it.
+        if "structuredContent" in result:
+            sc_text = _structured_content_text(result.get("structuredContent"))
+            if sc_text:
+                parts.append(sc_text)
+        if parts:
             return "\n".join(parts)
-        if "text" in result:
-            return str(result["text"])
         return json.dumps(result, ensure_ascii=False)
     return str(result)
+
+
+def _replace_structured_content(structured: Any, text: str) -> Any:
+    if isinstance(structured, str):
+        return text
+    if isinstance(structured, dict):
+        out = dict(structured)
+        replaced = False
+        for key in ("text", "content", "message", "data"):
+            if key in out and isinstance(out[key], str):
+                out[key] = text
+                replaced = True
+                break
+        if not replaced:
+            return {"text": text}
+        return out
+    return {"text": text}
 
 
 def _replace_text_content(result: Dict[str, Any], text: str) -> Dict[str, Any]:
@@ -475,6 +766,10 @@ def _replace_text_content(result: Dict[str, Any], text: str) -> Dict[str, Any]:
         out["content"] = new_content
     else:
         out["content"] = [{"type": "text", "text": text}]
+    if "structuredContent" in out:
+        out["structuredContent"] = _replace_structured_content(
+            out.get("structuredContent"), text
+        )
     return out
 
 
@@ -561,6 +856,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="host:port for --transport http (default 127.0.0.1:8765)",
     )
     p.add_argument(
+        "--t0-mode",
+        choices=["enforce", "warn"],
+        default=None,
+        help="T0 action on flagged tools: enforce (strip+block calls, default) "
+        "or warn (annotate _sentinel only)",
+    )
+    p.add_argument(
         "command",
         nargs=argparse.REMAINDER,
         help="Backend MCP server command (prefix with --)",
@@ -607,6 +909,8 @@ def main(
         overrides["transport"] = args.transport
     if args.listen:
         overrides["listen"] = args.listen
+    if args.t0_mode:
+        overrides["t0_mode"] = args.t0_mode
     audit = args.audit_log or args.log
     if audit:
         overrides["audit_log"] = str(audit)
