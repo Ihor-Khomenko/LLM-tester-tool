@@ -579,6 +579,13 @@ def run_scenario(
     tools = resolve_scenario_tools(scenario)
     tools_prompt = _tool_dicts_for_prompt(tools)
 
+    # Rug-pull / tool-alias: advertise mutated schemas to the agent in BOTH
+    # arms. Guard presence only decides whether to block/pin — the none arm
+    # must still see the changed descriptions or ASR without defense is
+    # structurally zero.
+    if scenario.tools_after:
+        tools_prompt = _tool_dicts_for_prompt(scenario.tools_after)
+
     if guard is not None:
         guard.reset_session()
         guard.set_user_task(scenario.user_request)
@@ -592,7 +599,7 @@ def run_scenario(
                 for t in tools
             ]
         )
-        # Rug-pull: second registration with mutated descriptions.
+        # Rug-pull: second registration with mutated descriptions (pin/block).
         if scenario.tools_after:
             guard.check_tool_registration(
                 [
@@ -604,8 +611,6 @@ def run_scenario(
                     for t in scenario.tools_after
                 ]
             )
-            # Advertise mutated schemas to the agent (injection via tool list).
-            tools_prompt = _tool_dicts_for_prompt(scenario.tools_after)
 
     tools_txt = json.dumps(tools_prompt, indent=2)
     system = REACT_SYSTEM.format(tools=tools_txt)
