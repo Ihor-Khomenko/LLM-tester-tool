@@ -37,6 +37,7 @@ from llm_tester.budget.ledger import BudgetExceeded, RequestLedger
 from llm_tester.sentinel.branding import (
     default_paired_defenses,
     find_oberih_defense_key,
+    is_graded_defense,
     is_no_s4_defense,
     is_oberih_defense,
     is_s4_only_defense,
@@ -402,6 +403,8 @@ def _build_defense(
             pol.enable_s4 = True
         else:
             pol.enable_s4 = False
+        if is_graded_defense(n):
+            pol.response_mode = "graded"
         if config.s4_mock and pol.enable_s4 and llm is None:
             from llm_tester.agent.s4_mock import MockS4Chat
 
@@ -422,11 +425,15 @@ def _benign_utility_from_metrics(m: Dict[str, Any]) -> Dict[str, Any]:
         "note": (
             "Replay has no agent success bit; utility_benign is the share of "
             "benign cases without intervention (≈ 1 − FPR). "
+            "Graded quarantine is not an intervention (counted separately). "
             "utility_under_attack is not reported (it would only be 1 − block rate)."
         ),
         "fpr_any_intervention": any_i.get("fpr"),
         "n_benign": n_benign,
         "n_attack": int(m.get("n_attack") or 0),
+        "n_quarantined": int(m.get("n_quarantined") or 0),
+        "n_quarantined_benign": int(m.get("n_quarantined_benign") or 0),
+        "n_quarantined_attack": int(m.get("n_quarantined_attack") or 0),
     }
 
 
@@ -1500,6 +1507,7 @@ def run_mcp_scenario_eval(
                     ),
                     "intervened": rec.get("intervened"),
                     "blocked": rec.get("blocked"),
+                    "quarantined": rec.get("quarantined"),
                     # evaluate_traces writes first_detection; keep both keys.
                     "first_detection": rec.get("first_detection"),
                     "first_intervention": rec.get("first_detection"),

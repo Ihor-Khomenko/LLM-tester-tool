@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added — Opt-in graded-action A/B (`response_mode: graded`)
+
+* **Graded response (default off):** when `response_mode: graded` (defense arm `oberih_graded` / `sentinel_graded`), a cascade **BLOCK** of a local file write with no canary / tainted secret is softened to `Decision.QUARANTINE` (path redirected into `quarantine_dir`, default `/tmp/oberih-quarantine`). Exfil-capable tools (`send`/`http`/`post`/…), destructive ops, and writes containing canary/secret material stay hard-blocked.
+* **Scoring honesty:** quarantine is **not** counted as an FP/TP intervention; metrics expose `n_quarantined` / `n_quarantined_benign` / `n_quarantined_attack` separately. τ=0.7, weights, S3 scale, and provenance are unchanged — only the post-decision action.
+* **Harness / proxy:** `--defense oberih_graded` in `mcp-scenario-eval`; proxy forwards rewritten quarantine paths and audits `action=quarantine`.
+
 ### Fixed — Oberih real MCP proxy correctness / security
 
 * **T0 enforcement (default):** flagged tools (poisoned description, hash-pin mismatch / rug-pull on re-`tools/list` after `notifications/tools/list_changed`) are **removed** from the `tools/list` result returned to the client, and `tools/call` to a flagged name returns a JSON-RPC error (`-32001`). Opt out with `t0_mode: warn` (or `--t0-mode warn`) to restore the legacy annotate-only `_sentinel` behaviour.

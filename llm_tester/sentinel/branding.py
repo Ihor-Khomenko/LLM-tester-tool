@@ -49,6 +49,15 @@ _NO_S4_ALIASES: FrozenSet[str] = frozenset(
     }
 )
 _S4_ONLY_ALIASES: FrozenSet[str] = frozenset({"s4_only", "s4-only", "only_s4"})
+_GRADED_ALIASES: FrozenSet[str] = frozenset(
+    {
+        f"{MACHINE_ID}_graded",
+        f"{LEGACY_MACHINE_ID}_graded",
+        "oberih-graded",
+        "sentinel-graded",
+        "graded",
+    }
+)
 
 
 def normalize_defense_token(name: Optional[str]) -> str:
@@ -66,7 +75,19 @@ def is_oberih_defense(name: Optional[str]) -> bool:
         return True
     if n in _S4_ONLY_ALIASES or n_us in {a.replace("-", "_") for a in _S4_ONLY_ALIASES}:
         return True
+    if n in _GRADED_ALIASES or n_us in {a.replace("-", "_") for a in _GRADED_ALIASES}:
+        return True
     return False
+
+
+def is_graded_defense(name: Optional[str]) -> bool:
+    n = (name or "").lower().strip()
+    n_us = n.replace("-", "_")
+    return n in _GRADED_ALIASES or n_us in {
+        "oberih_graded",
+        "sentinel_graded",
+        "graded",
+    }
 
 
 def is_full_stack_defense(name: Optional[str]) -> bool:
@@ -101,6 +122,8 @@ def canonical_defense_id(name: Optional[str]) -> str:
     n = raw.lower()
     if is_s4_only_defense(n):
         return "s4_only"
+    if is_graded_defense(n):
+        return f"{MACHINE_ID}_graded"
     if is_no_s4_defense(n):
         return f"{MACHINE_ID}_no_s4"
     if is_full_stack_defense(n):
@@ -147,6 +170,8 @@ def defense_cli_choices() -> Tuple[str, ...]:
         LEGACY_MACHINE_ID,
         f"{MACHINE_ID}_no_s4",
         f"{LEGACY_MACHINE_ID}_no_s4",
+        f"{MACHINE_ID}_graded",
+        f"{LEGACY_MACHINE_ID}_graded",
         "s4_only",
     )
 
@@ -173,7 +198,8 @@ def product_blurb(*, uk: bool = False) -> str:
 def known_defense_help() -> str:
     return (
         f"{MACHINE_ID}|{LEGACY_MACHINE_ID}|{MACHINE_ID}_no_s4|"
-        f"{LEGACY_MACHINE_ID}_no_s4|s4_only|none"
+        f"{LEGACY_MACHINE_ID}_no_s4|{MACHINE_ID}_graded|"
+        f"{LEGACY_MACHINE_ID}_graded|s4_only|none"
     )
 
 

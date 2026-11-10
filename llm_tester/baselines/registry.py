@@ -11,6 +11,7 @@ from llm_tester.baselines.task_shield import TaskShieldGuard
 from llm_tester.sentinel.branding import (
     MACHINE_ID,
     is_full_stack_defense,
+    is_graded_defense,
     is_oberih_defense,
 )
 
@@ -69,7 +70,10 @@ def build_baseline(
         kw = dict(oberih_kwargs or sentinel_kwargs or {})
         if llm_provider is not None and "llm_provider" not in kw:
             kw["llm_provider"] = llm_provider
-        return build_oberih(**kw)
+        guard = build_oberih(**kw)
+        if is_graded_defense(name):
+            guard.policy.response_mode = "graded"
+        return guard
     raise ValueError(
         f"Unknown baseline {name!r}. Choose from: {', '.join(BASELINE_NAMES)}"
     )

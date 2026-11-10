@@ -12,6 +12,7 @@ class Decision(str, Enum):
     BLOCK = "block"
     ASK_USER = "ask_user"
     SANITIZE = "sanitize"
+    QUARANTINE = "quarantine"  # graded: local write redirected / dry-run
     ESCALATE = "escalate"  # internal: grey zone before S4
 
 

@@ -188,6 +188,8 @@ Cascade stages (cheap → expensive):
 3. **S3** intent consistency (lite bag-of-ngrams by default; optional `sentence-transformers`) — optional extra
 4. **S4** LLM judge only in the grey zone `[τ_low, τ_high]` — optional; off by default
 
+**Graded action A/B (opt-in):** set `response_mode: graded` in policy, or use defense arm `oberih_graded`. After a cascade BLOCK of a harmless local file write (no canary / tainted secret), emit `Decision.QUARANTINE` (path redirected into `quarantine_dir`) instead of a hard block. Exfil / destructive / secret-bearing calls stay blocked. τ, weights, S3 scale, and provenance are unchanged; quarantine counts are reported separately (`n_quarantined*`) and are not FPs.
+
 ### Library API
 
 ```python

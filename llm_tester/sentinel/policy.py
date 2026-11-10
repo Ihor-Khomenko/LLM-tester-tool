@@ -133,6 +133,14 @@ class SentinelPolicy:
     # S3 scale. Opt-in only — requires explicit approval to enable in production.
     soft_s3_allow_without_s4: bool = False
 
+    # Graded action response (default ``block`` = historical hard-block).
+    # ``graded``: after a cascade BLOCK of a local file write with no
+    # canary/tainted secret, emit ``Decision.QUARANTINE`` instead (exfil /
+    # destructive / secret-bearing calls stay blocked). Does not change τ /
+    # weights / S3 scale / provenance — only the post-decision action.
+    response_mode: str = "block"  # block | graded
+    quarantine_dir: str = "/tmp/oberih-quarantine"
+
     # T0
     t0_semantic_diff_threshold: float = 0.35
     t0_block_on_hash_mismatch: bool = True
