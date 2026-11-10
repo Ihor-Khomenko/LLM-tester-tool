@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added — research runner / real-MCP track in-repo
+
+* `research/runner` — 24/7 LaunchAgent supervisor (planner, guards, live/adaptive/real_mcp drivers, analyzer).
+* `research/real_mcp` — Node stdio sink/helper servers + lockfile for the real-MCP arms (`none` / `oberih` / `oberih_gw`).
+* Path/env parametrization (`OBERIH_*`, `RESEARCH_ROOT`, `LLM_TESTER_ROOT`, `REAL_MCP_*`, …); frozen-checkout defaults in `policy.yaml`.
+* Offline CI: planner rotation, battery/disk guards, analyzer fixture, privacy grep (home paths / personal usernames), optional Node scripted-agent smoke. Proxy secret-free env whitelist unchanged (`/usr/bin/env` argv passthrough for `SINK_LOG` / `HELPER_*` / `GW_*`).
+* Docs/defaults are host-generic (LaunchAgent label `org.oberih.runner`); no personal usernames, home paths, or machine IDs in-tree.
+
 ### Fixed — Oberih real MCP proxy correctness / security
 
 * **T0 enforcement (default):** flagged tools (poisoned description, hash-pin mismatch / rug-pull on re-`tools/list` after `notifications/tools/list_changed`) are **removed** from the `tools/list` result returned to the client, and `tools/call` to a flagged name returns a JSON-RPC error (`-32001`). Opt out with `t0_mode: warn` (or `--t0-mode warn`) to restore the legacy annotate-only `_sentinel` behaviour.
