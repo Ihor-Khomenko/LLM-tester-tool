@@ -1,0 +1,77 @@
+# Oberih 24/7 runner policy (deterministic). Edit, then `bin/ctl.sh plan --dry` to preview.
+# Times are Europe/Kiev (box-local on the Mac).
+#
+# Paths below are relative to the research workspace (OBERIH_TESTS_ROOT / RESEARCH_ROOT),
+# which defaults to the parent of this runner/ directory. On the Mac box that is
+# ~/Documents/University/oberih-tests; in this repo checkout it is research/.
+# Overrides (no secrets): OBERIH_TESTS_ROOT, RESEARCH_ROOT, LLM_TESTER_ROOT,
+# OBERIH_VENV_PYTHON, OBERIH_RUNS_AUTO, OLLAMA_BIN, OBERIH_PATH, REAL_MCP_ROOT, REAL_MCP_NODE.
+version: 1
+llm_tester_sha: fafd5001cabf74b7b3fc7c6760aa884b21435a0d   # LLM-tester-tool main after PR #31 (Oberih proxy hardening; was 7d7a77d, PR #30)
+llm_tester_dir: LLM-tester-tool-fafd500      # Mac frozen checkout; in-repo set LLM_TESTER_ROOT=.. (repo root) or llm_tester_dir: ..
+venv: venv-fafd500                           # Mac venv under research workspace; falls back to python3 if missing
+std_corpus_dir: mcp-security-research        # b196453
+v6_corpus_dir: mcp-security-research-v6      # 92dc2b4
+
+# Start only after these legacy queues have exited (pid + substring of its command line, guards against PID reuse).
+# Clear or empty this list on a fresh machine / CI.
+legacy_wait:
+  - {pid: 78369, cmd: queue_adaptive2.sh}
+  - {pid: 79077, cmd: queue_v6b.sh}
+
+guards:
+  min_free_gb: 22            # pause below this (checked between jobs and every 30 s during a job)
+  max_swap_mb: 12000         # pause above this
+  battery_min_pct: 0         # Ihor 2026-11-10 22:25: do not pause on battery (was 30)
+  preempt_running_job: true  # on a guard breach mid-job: stop the job and requeue it (drivers resume by run_tag)
+  unload_between_jobs: true  # keep_alive 0 for every loaded model before/after each job (never deletes models)
+  allow_pull: false          # planner never pulls; a manual job may set allow_pull: true (pull only if free disk stays >= min_free_gb)
+  require_ollama: true      # pause while the local Ollama server is down
+
+job_defaults:
+  timeout_s: 10800           # 3 h
+  max_attempts: 2            # = retry once on crash/timeout
+  langs: [uk, en]
+  max_turns: 4
+  max_tokens: 256
+
+# Oberih arms. 'oberih' = default policy (tau=0.7, S1-S3, no S4, soft_s3 OFF). Variants are explicit A/B arms only.
+variants:
+  soft_s3: {soft_s3_allow: true}
+  s1:      {policy_json: {enable_s1: true, enable_s2: false, enable_s3: false, enable_s4: false}}
+  s1s2:    {policy_json: {enable_s1: true, enable_s2: true, enable_s3: false, enable_s4: false}}
+  noT0:    {policy_json: {enable_t0: false}}
+
+# Rough cost model for ETAs: seconds per (case x arm), measured on this M1 from queue_v28/queue_v6 logs.
+sec_per_case_arm: {qwen2.5:7b: 15, phi4-mini: 10, granite3-dense:2b: 13, granite3-moe:3b: 9, hermes3:3b: 8, llama3.2:3b: 6,
+                   ministral-3:3b: 10, granite4:micro: 9, smollm2:1.7b: 10, default: 10}
+real_mcp_ep_factor: 2.0     # real-MCP episodes allow up to 6 turns -> ~2x a harness case
+cases: {real_mcp: 36, std: 80, v6-hard: 96, std_benign: 50, v6-hard_benign: 40, rug_std: 10, rug_v6: 8}
+adaptive_min_per_lang: {v6-hard: 70, std: 8}
+
+planner:
+  batch_size: 3              # jobs generated when pending/ is empty
+  seeds_t07: [101, 202, 303, 404, 505, 606, 707, 808, 909, 1010, 1111, 1212]
+  # (a) PR #29 none-arm live re-runs (rug_pull / subtle rug / alias). Always first, in this order. Arms none+oberih (paired, 708fd4b).
+  a_rerun:
+    std_scenarios: [mcp-rug-pull-tool-desc-001]
+    v6_scenarios: [mcp-v6h-rug-subtle-001, mcp-v6h-alias-001]
+    std_t0_models: [granite3-moe:3b, qwen2.5:7b, hermes3:3b, phi4-mini, granite3-dense:2b, smollm2:1.7b, granite4:micro, ministral-3:3b, llama3.2:3b]   # v28 A + E (+ S_llama3.2)
+    std_t07_models: [granite3-moe:3b, qwen2.5:7b, hermes3:3b]                     # v28 C
+    std_t07_seeds: [101, 202, 303]
+    v6_models: [granite3-moe:3b, granite3-dense:2b, hermes3:3b, phi4-mini, qwen2.5:7b, llama3.2:3b, ministral-3:3b, granite4:micro]
+  # After (a): weighted rotation. Next category = argmin(done_jobs/weight), ties by this order.
+  rotation:
+    - {category: b_seeds,    weight: 3}
+    - {category: f_real_mcp, weight: 1}   # real MCP servers over stdio (added 2026-11-10); listed 2nd so its first job comes early
+    - {category: d_variants, weight: 2}
+    - {category: c_adaptive, weight: 1}
+    - {category: e_benign,   weight: 1}
+  b_seeds:    {models: [granite3-moe:3b, qwen2.5:7b, hermes3:3b], corpus: v6-hard, temperature: 0.7, arms: [none, oberih]}
+  d_variants: {models: [granite3-moe:3b, qwen2.5:7b, hermes3:3b, phi4-mini], corpus: v6-hard, arms: [soft_s3, s1, s1s2, noT0]}
+  c_adaptive: {pairs: [[phi4-mini, v6-hard], [phi4-mini, std], [granite3-moe:3b, v6-hard], [qwen2.5:7b, v6-hard], [hermes3:3b, v6-hard]],
+               attacker: qwen2.5:7b, families: "a_para,a_judge,a_iter", k_para: 4, k_judge: 2, k_iter: 3, seeds: [42, 101, 202, 303, 404]}
+  e_benign:   {models: [granite3-moe:3b, phi4-mini, hermes3:3b, qwen2.5:7b, granite3-dense:2b], corpora: [v6-hard, std],
+               temperature: 0.7, arms: [none, oberih, soft_s3]}
+  f_real_mcp: {models: [qwen2.5:7b, granite3-moe:3b, hermes3:3b, phi4-mini, llama3.2:3b, granite3-dense:2b, ministral-3:3b, granite4:micro],
+               arms: [none, oberih, oberih_gw], seeds_t07: [101, 202, 303], max_turns: 6, max_tokens: 400, timeout_s: 7200}

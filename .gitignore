@@ -16,6 +16,8 @@ build/
 *.jsonl
 !llm_tester/data/**/*.jsonl
 !tests/fixtures/**/*.jsonl
+!tests/research/fixtures/**/*.jsonl
+!research/real_mcp/validation/**/*.jsonl
 test_results.json
 toxicchat_test_results.json
 guarded_results.csv
@@ -23,3 +25,24 @@ guarded_results.jsonl
 /runs/
 /figures_out/
 .DS_Store
+
+# Oberih research runner / real_mcp (runtime artefacts; never commit)
+research/real_mcp/node_modules/
+research/real_mcp/sandbox/**
+!research/real_mcp/sandbox/.gitkeep
+research/runner/queue/
+research/runner/logs/
+research/runner/cache/
+research/runner/selftest/
+research/runner/status.json
+research/runner/summary.json
+research/runner/summary.md
+research/runner/findings.md
+research/runner/proposals.md
+research/runner/supervisor.lock
+research/runner/supervisor.pid
+research/runner/PAUSE
+research/runner/STOPNOW
+research/runner/NOPLAN
+**/runs_auto/
+*.bak

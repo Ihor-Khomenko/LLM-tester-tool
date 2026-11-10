@@ -459,6 +459,10 @@ API: `check_tool_registration` / `on_tool_output` / `check_tool_call`.
 
 Тести та GitHub Actions **не** роблять реальних мережевих/API викликів — лише моки. Реальні запити лише при ручному запуску CLI.
 
+### Research runner / real-MCP (thesis 24/7)
+
+Local Ollama job supervisor + real stdio MCP sandbox track live under [`research/`](research/README.md) (`runner/`, `real_mcp/`). Paths are env/policy-driven (Mac LaunchAgent defaults kept in `policy.yaml`). CI covers planner/guards/analyzer mocks and an optional Node scripted-agent smoke.
+
 ### Старі скрипти
 
 ```sh
