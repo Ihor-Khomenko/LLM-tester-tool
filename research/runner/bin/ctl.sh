@@ -19,7 +19,7 @@ else
   export PYTHONPATH="$LT"
 fi
 
-LABEL="${OBERIH_LAUNCHD_LABEL:-ua.ihkh.oberih-runner}"
+LABEL="${OBERIH_LAUNCHD_LABEL:-org.oberih.runner}"
 PLIST="${OBERIH_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/$LABEL.plist}"
 cmd="${1:-status}"; shift || true
 case "$cmd" in

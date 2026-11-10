@@ -1,28 +1,24 @@
 # Oberih 24/7 runner policy (deterministic). Edit, then `bin/ctl.sh plan --dry` to preview.
-# Times are Europe/Kiev (box-local on the Mac).
+# Local wall-clock timezone is whatever the host uses.
 #
 # Paths below are relative to the research workspace (OBERIH_TESTS_ROOT / RESEARCH_ROOT),
-# which defaults to the parent of this runner/ directory. On the Mac box that is
-# ~/Documents/University/oberih-tests; in this repo checkout it is research/.
+# which defaults to the parent of this runner/ directory (in this repo: research/).
 # Overrides (no secrets): OBERIH_TESTS_ROOT, RESEARCH_ROOT, LLM_TESTER_ROOT,
 # OBERIH_VENV_PYTHON, OBERIH_RUNS_AUTO, OLLAMA_BIN, OBERIH_PATH, REAL_MCP_ROOT, REAL_MCP_NODE.
 version: 1
-llm_tester_sha: fafd5001cabf74b7b3fc7c6760aa884b21435a0d   # LLM-tester-tool main after PR #31 (Oberih proxy hardening; was 7d7a77d, PR #30)
-llm_tester_dir: LLM-tester-tool-fafd500      # Mac frozen checkout; in-repo set LLM_TESTER_ROOT=.. (repo root) or llm_tester_dir: ..
-venv: venv-fafd500                           # Mac venv under research workspace; falls back to python3 if missing
+llm_tester_sha: fafd5001cabf74b7b3fc7c6760aa884b21435a0d   # LLM-tester-tool after PR #31 (Oberih proxy hardening)
+llm_tester_dir: LLM-tester-tool-fafd500      # frozen sibling checkout name; in-repo set LLM_TESTER_ROOT to the repo root
+venv: venv-fafd500                           # venv under the research workspace; falls back to python3 if missing
 std_corpus_dir: mcp-security-research        # b196453
 v6_corpus_dir: mcp-security-research-v6      # 92dc2b4
 
-# Start only after these legacy queues have exited (pid + substring of its command line, guards against PID reuse).
-# Clear or empty this list on a fresh machine / CI.
-legacy_wait:
-  - {pid: 78369, cmd: queue_adaptive2.sh}
-  - {pid: 79077, cmd: queue_v6b.sh}
+# Optional: wait until prior local queue scripts exit (pid + cmdline substring; guards against PID reuse).
+legacy_wait: []
 
 guards:
   min_free_gb: 22            # pause below this (checked between jobs and every 30 s during a job)
   max_swap_mb: 12000         # pause above this
-  battery_min_pct: 0         # Ihor 2026-11-10 22:25: do not pause on battery (was 30)
+  battery_min_pct: 0         # <=0 disables the battery pause latch (useful on AC-only / desktop hosts)
   preempt_running_job: true  # on a guard breach mid-job: stop the job and requeue it (drivers resume by run_tag)
   unload_between_jobs: true  # keep_alive 0 for every loaded model before/after each job (never deletes models)
   allow_pull: false          # planner never pulls; a manual job may set allow_pull: true (pull only if free disk stays >= min_free_gb)
@@ -42,7 +38,7 @@ variants:
   s1s2:    {policy_json: {enable_s1: true, enable_s2: true, enable_s3: false, enable_s4: false}}
   noT0:    {policy_json: {enable_t0: false}}
 
-# Rough cost model for ETAs: seconds per (case x arm), measured on this M1 from queue_v28/queue_v6 logs.
+# Rough cost model for ETAs: seconds per (case x arm); tune from local queue logs if needed.
 sec_per_case_arm: {qwen2.5:7b: 15, phi4-mini: 10, granite3-dense:2b: 13, granite3-moe:3b: 9, hermes3:3b: 8, llama3.2:3b: 6,
                    ministral-3:3b: 10, granite4:micro: 9, smollm2:1.7b: 10, default: 10}
 real_mcp_ep_factor: 2.0     # real-MCP episodes allow up to 6 turns -> ~2x a harness case

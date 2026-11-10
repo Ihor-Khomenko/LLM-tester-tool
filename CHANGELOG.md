@@ -4,10 +4,11 @@
 
 ### Added — research runner / real-MCP track in-repo
 
-* `research/runner` — 24/7 LaunchAgent supervisor (planner, guards, live/adaptive/real_mcp drivers, analyzer) previously Mac-only.
+* `research/runner` — 24/7 LaunchAgent supervisor (planner, guards, live/adaptive/real_mcp drivers, analyzer).
 * `research/real_mcp` — Node stdio sink/helper servers + lockfile for the real-MCP arms (`none` / `oberih` / `oberih_gw`).
-* Path/env parametrization (`OBERIH_*`, `RESEARCH_ROOT`, `LLM_TESTER_ROOT`, `REAL_MCP_*`, …); Mac defaults remain in `policy.yaml`.
-* Offline CI: planner rotation, battery/disk guards, analyzer fixture, optional Node scripted-agent smoke. Proxy secret-free env whitelist unchanged (`/usr/bin/env` argv passthrough for `SINK_LOG` / `HELPER_*` / `GW_*`).
+* Path/env parametrization (`OBERIH_*`, `RESEARCH_ROOT`, `LLM_TESTER_ROOT`, `REAL_MCP_*`, …); frozen-checkout defaults in `policy.yaml`.
+* Offline CI: planner rotation, battery/disk guards, analyzer fixture, privacy grep (home paths / personal usernames), optional Node scripted-agent smoke. Proxy secret-free env whitelist unchanged (`/usr/bin/env` argv passthrough for `SINK_LOG` / `HELPER_*` / `GW_*`).
+* Docs/defaults are host-generic (LaunchAgent label `org.oberih.runner`); no personal usernames, home paths, or machine IDs in-tree.
 
 ### Fixed — Oberih real MCP proxy correctness / security
 

@@ -8,9 +8,9 @@ research/
   real_mcp/        # Node stdio MCP servers + npm lockfile (no node_modules in git)
 ```
 
-## Layout vs the Mac box
+## Layout
 
-On the owner's Mac the research workspace is `~/Documents/University/oberih-tests` with sibling dirs `runner/`, `real_mcp/`, frozen `LLM-tester-tool-*` checkouts, and corpora. In this repo the same relative layout is under `research/` (`runner/` + `real_mcp/`); point `LLM_TESTER_ROOT` at the repo root (or set `llm_tester_dir: ..` in a local policy override) so `import llm_tester` resolves.
+The research workspace is the directory that contains `runner/` and `real_mcp/` (in this repo: `research/`). Point `LLM_TESTER_ROOT` at the repo root (or set `llm_tester_dir: ..` in a local policy override) so `import llm_tester` resolves. On a macOS host, the same layout can live outside the git checkout; configure paths via env / `policy.yaml`.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -19,17 +19,18 @@ On the owner's Mac the research workspace is `~/Documents/University/oberih-test
 | `LLM_TESTER_ROOT` | `policy.llm_tester_dir` under workspace | PYTHONPATH for `llm_tester` |
 | `OBERIH_VENV_PYTHON` | `policy.venv/bin/python` if present | Interpreter for jobs |
 | `OBERIH_RUNS_AUTO` | `$RESEARCH_ROOT/runs_auto` | Job output tree |
-| `OLLAMA_BIN` / `OBERIH_PATH` | Homebrew + `PATH` | Local Ollama CLI / child PATH |
+| `OLLAMA_BIN` / `OBERIH_PATH` | Homebrew prefixes + `PATH` | Local Ollama CLI / child PATH |
 | `REAL_MCP_ROOT` / `REAL_MCP_NODE` | `$RESEARCH_ROOT/real_mcp` / `node` on PATH | Real-MCP track |
+| `OBERIH_LAUNCHD_LABEL` | `org.oberih.runner` | macOS LaunchAgent label |
 
-`policy.yaml` keeps the Mac frozen-checkout names (`LLM-tester-tool-fafd500`, `venv-fafd500`) so the existing LaunchAgent keeps working. No API keys belong in the repo or in policy — export them only in the shell/launchd env if a paid provider is ever used (this runner does not call paid APIs).
+`policy.yaml` keeps frozen-checkout names (`LLM-tester-tool-fafd500`, `venv-fafd500`) as defaults for an external research workspace; override with env when developing inside this repo. No API keys belong in the repo or in policy.
 
 ## Install (macOS LaunchAgent)
 
-1. Place/link this tree so `runner/` and `real_mcp/` sit under your research workspace (or use the in-repo `research/` paths with env overrides).
-2. `python3 -m venv …` and `pip install -e ".[oberih]"` on the LLM-tester checkout named in `policy.yaml` (or set `LLM_TESTER_ROOT`).
+1. Place/link this tree so `runner/` and `real_mcp/` sit under your research workspace (or use in-repo `research/` with env overrides).
+2. Create a venv and `pip install -e ".[oberih]"` on the LLM-tester checkout named in `policy.yaml` (or set `LLM_TESTER_ROOT`).
 3. `cd research/real_mcp && npm ci` (pins `@modelcontextprotocol/server-filesystem@2.2.0`).
-4. Copy `runner/launchd/ua.ihkh.oberih-runner.plist.example` → `~/Library/LaunchAgents/ua.ihkh.oberih-runner.plist`, edit absolute paths, create `runner/logs/`.
+4. Copy `runner/launchd/org.oberih.runner.plist.example` → `~/Library/LaunchAgents/org.oberih.runner.plist`, replace `WORKSPACE` with absolute paths, create `runner/logs/`.
 5. `chmod +x research/runner/bin/ctl.sh && research/runner/bin/ctl.sh load`
 
 Guards (disk / swap / battery / Ollama-up) are in `policy.yaml`. `battery_min_pct: 0` disables the battery pause latch.
@@ -59,7 +60,7 @@ Episodes drive **real** stdio MCP servers:
 
 Arms: `none` (direct) / `oberih` (one Oberih proxy per server) / `oberih_gw` (one proxy in front of `real_mcp_gateway.py`).
 
-After PR #31 the proxy gives backends a secret-free env whitelist (no `SINK_LOG` / `HELPER_*` / `GW_*`). The driver keeps those working by prefixing backends with `/usr/bin/env KEY=VAL …` in the proxy argv — **without** widening the proxy whitelist. A future explicit `backend_env` passthrough on the proxy would be cleaner; until then do not add sandbox keys to the default whitelist.
+After PR #31 the proxy gives backends a secret-free env whitelist (no `SINK_LOG` / `HELPER_*` / `GW_*`). The driver keeps those working by prefixing backends with `/usr/bin/env KEY=VAL …` in the proxy argv — **without** widening the proxy whitelist.
 
 Mock LLM smoke (CI / laptop, no Ollama):
 
@@ -73,4 +74,4 @@ python research/runner/lib/real_mcp_driver.py \
 
 ## CI
 
-Pytest covers planner rotation, guard/battery latch behaviour, analyzer on a tiny fixture, and (when Node + `node_modules` exist) a scripted-agent real_mcp smoke. No Ollama, no network APIs, no paid providers.
+Pytest covers planner rotation, guard/battery latch behaviour, analyzer on a tiny fixture, a privacy grep (home paths / personal usernames), and (when Node + `node_modules` exist) a scripted-agent real_mcp smoke. No Ollama, no network APIs, no paid providers.

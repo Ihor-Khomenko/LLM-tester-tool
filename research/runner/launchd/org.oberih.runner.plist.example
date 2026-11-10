@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Copy to ~/Library/LaunchAgents/org.oberih.runner.plist and replace WORKSPACE
+     with your research workspace absolute path (directory that contains runner/
+     and real_mcp/). Then: research/runner/bin/ctl.sh load
+     Override label via OBERIH_LAUNCHD_LABEL if needed. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.oberih.runner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- Prefer an absolute path to the policy venv python. -->
+    <string>WORKSPACE/venv/bin/python</string>
+    <string>WORKSPACE/runner/lib/supervisor.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>WORKSPACE/runner</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OBERIH_RUNNER_ROOT</key>
+    <string>WORKSPACE/runner</string>
+    <key>OBERIH_TESTS_ROOT</key>
+    <string>WORKSPACE</string>
+    <key>RESEARCH_ROOT</key>
+    <string>WORKSPACE</string>
+    <key>PYTHONPATH</key>
+    <string>WORKSPACE/LLM-tester-tool</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>WORKSPACE/runner/logs/launchd.out</string>
+  <key>StandardErrorPath</key>
+  <string>WORKSPACE/runner/logs/launchd.err</string>
+</dict>
+</plist>

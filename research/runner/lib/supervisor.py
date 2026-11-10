@@ -1,4 +1,4 @@
-"""Oberih 24/7 runner supervisor (launchd: ua.ihkh.oberih-runner). File queue: queue/pending -> running -> done|failed.
+"""Oberih 24/7 runner supervisor (launchd label default: org.oberih.runner). File queue: queue/pending -> running -> done|failed.
 One job at a time, one model in memory. Guards: legacy queue PIDs, PAUSE file, Ollama up, free disk, swap, battery.
 Resumable drivers (append + skip done rows by run_tag) make preemption safe: a preempted job goes back to pending
 without spending an attempt. Never deletes Ollama models, never calls paid APIs, never pushes to git."""

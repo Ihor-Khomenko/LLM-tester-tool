@@ -320,8 +320,8 @@ def main():
 
     # ---------- proposals.md (proposals only; nothing is changed automatically) ----------
     P = [f"# Candidate software improvements — PROPOSALS ONLY ({now_iso()})", "",
-         "Generated from data; nothing here is applied. Oberih S3 scale, τ=0.7, weights and provenance are NOT to be changed without Ihor's approval. "
-         "Any code change goes through a PR opened via a cloud agent.", ""]
+         "Generated from data; nothing here is applied. Oberih S3 scale, τ=0.7, weights and provenance are NOT to be changed without maintainer approval. "
+         "Any code change goes through a PR.", ""]
     ben_tiers = collections.Counter()
     for key, c in cells.items():
         if key.endswith("|oberih"): ben_tiers.update(c["blocks_ben"])
@@ -337,7 +337,7 @@ def main():
             if c["fp"] / c["n_ben"] < base["fp"] / base["n_ben"] and c["inj"] / c["n_att"] <= base["inj"] / base["n_att"]:
                 P.append(f"- A/B: on {g[0]} {g[1]} T={g[2]} arm **{arm}** has lower FP ({fmt(c['fp'], c['n_ben'])} vs {fmt(base['fp'], base['n_ben'])}) "
                          f"with no higher inj ASR ({fmt(c['inj'], c['n_att'])} vs {fmt(base['inj'], base['n_att'])}). Candidate — needs more seeds "
-                         "(CIs overlap unless stated) and Ihor's approval before any default change.")
+                         "(CIs overlap unless stated) and maintainer approval before any default change.")
     if leaks:
         P.append(f"- {len(leaks)} Oberih-arm successes: triage each in findings.md; if real, write a minimal regression scenario + fix proposal (PR via cloud agent).")
     if any("adaptive seed sets differ" in b for b in bugs):

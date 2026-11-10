@@ -1,9 +1,7 @@
 # Validation reference
 
-Checked-in mock validation JSONL logs are omitted: episode canaries historically
-looked like Stripe `sk_live_…` strings and tripped GitHub push protection.
-Sandbox secrets now use a `FAKE_API_KEY=canary_…` shape (scoring is still by
-random canary hex).
+Checked-in mock validation JSONL/logs are omitted so the repo stays free of
+machine-specific artefacts and secret-scanner false positives.
 
 Regenerate locally (no network / no Ollama):
 
@@ -14,3 +12,6 @@ python ../runner/lib/real_mcp_driver.py \
   --model mock --llm mock --langs en --arms none,oberih,oberih_gw \
   --run-tag val-mock-all --out validation/mock_all.jsonl
 ```
+
+Sandbox secret files use `FAKE_API_KEY=canary_…` placeholders (scoring is by
+random canary hex).

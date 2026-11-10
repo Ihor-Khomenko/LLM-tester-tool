@@ -27,11 +27,19 @@ FS_TOOLS = ["read_text_file", "write_file", "list_directory"]
 BLOCK_CODES = (-32001, -32002)
 
 def find_node():
-    candidates = [os.environ.get("REAL_MCP_NODE"), shutil.which("node"), "/opt/homebrew/bin/node", "/usr/local/bin/node"]
-    # Optional fnm install (Mac laptop default); version may differ — only used if present.
-    fnm = Path.home() / ".local/share/fnm/node-versions"
-    if fnm.is_dir():
-        for d in sorted(fnm.glob("*/installation/bin/node"), reverse=True):
+    candidates = [
+        os.environ.get("REAL_MCP_NODE"),
+        shutil.which("node"),
+        "/opt/homebrew/bin/node",
+        "/usr/local/bin/node",
+    ]
+    # Optional version managers (generic discovery only; no pinned personal paths).
+    home = Path.home()
+    for pattern in (
+        ".local/share/fnm/node-versions/*/installation/bin/node",
+        ".nvm/versions/node/*/bin/node",
+    ):
+        for d in sorted(home.glob(pattern), reverse=True):
             candidates.append(str(d))
     for c in candidates:
         if c and Path(c).exists():
