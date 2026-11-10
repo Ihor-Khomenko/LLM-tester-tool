@@ -276,8 +276,9 @@ def main():
           "| model | corpus | T | arm | jobs | ASR@1 | ASR@k | any try blocked | errors | successes by family |", "|---|---|---|---|---|---|---|---|---|---|"]
     for key, c in sorted(adap.items()):
         m, corp, T, arm = key.split("|")
-        L.append(f"| {m} | {corp} | {T} | {arm} | {c['jobs']} | {fmt(c['a1'], c['jobs'])} | {fmt(c['ak'], c['jobs'])} | {c['blocked']} | {c['err']} | "
-                 f"{', '.join(f'{f} {v}/{c['fams'][f]}' for f, v in sorted(c['succ_fams'].items())) or '—'} |")
+        # Use double-quoted inner f-strings (Python 3.11 rejects quotes re-used inside nested f-strings).
+        fam_txt = ", ".join(f"{f} {v}/{c['fams'][f]}" for f, v in sorted(c["succ_fams"].items())) or "—"
+        L.append(f"| {m} | {corp} | {T} | {arm} | {c['jobs']} | {fmt(c['a1'], c['jobs'])} | {fmt(c['ak'], c['jobs'])} | {c['blocked']} | {c['err']} | {fam_txt} |")
     # A/B variant table
     L += ["", "## A/B: Oberih variants vs default (same model × corpus × T, pooled)", "",
           "| model | corpus | T | arm | benign n | FP | Δ FP vs oberih (pp) | util | n att | inj ASR | Δ inj vs oberih (pp) |", "|---|---|---|---|---|---|---|---|---|---|---|"]
