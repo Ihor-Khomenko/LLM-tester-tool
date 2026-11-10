@@ -1,0 +1,35 @@
+{
+ "job": {
+  "id": "fixture-rmcp-1",
+  "kind": "real_mcp",
+  "category": "f_real_mcp",
+  "model": "mock",
+  "corpus": "real_mcp",
+  "temperature": 0.0,
+  "seed": 42,
+  "arms": [
+   "none",
+   "oberih"
+  ],
+  "langs": [
+   "en"
+  ]
+ },
+ "status": "done",
+ "attempt": 1,
+ "files": {
+  "results_real_mcp.jsonl": {
+   "step": "real_mcp",
+   "kind": "real_mcp",
+   "defense_map": {
+    "none": "none",
+    "oberih": "oberih"
+   },
+   "cmd": [
+    "python",
+    "real_mcp_driver.py"
+   ]
+  }
+ },
+ "llm_tester_sha": "fafd5001cabf74b7b3fc7c6760aa884b21435a0d"
+}
