@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added — Opt-in graded-action A/B (`response_mode: graded`)
+
+* **Graded response (default off):** when `response_mode: graded` (defense arm `oberih_graded` / `sentinel_graded`), a cascade **BLOCK** of a local file write with no canary / tainted secret is softened to `Decision.QUARANTINE` (path redirected into `quarantine_dir`, default `/tmp/oberih-quarantine`). Exfil-capable tools (`send`/`http`/`post`/…), destructive ops, and writes containing canary/secret material stay hard-blocked.
+* **Scoring honesty:** quarantine is **not** counted as an FP/TP intervention; metrics expose `n_quarantined` / `n_quarantined_benign` / `n_quarantined_attack` separately. τ=0.7, weights, S3 scale, and provenance are unchanged — only the post-decision action.
+* **Harness / proxy:** `--defense oberih_graded` in `mcp-scenario-eval`; proxy forwards rewritten quarantine paths and audits `action=quarantine`.
+
 ### Added — research runner / real-MCP track in-repo
 
 * `research/runner` — 24/7 LaunchAgent supervisor (planner, guards, live/adaptive/real_mcp drivers, analyzer).

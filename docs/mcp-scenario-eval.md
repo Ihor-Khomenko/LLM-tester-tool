@@ -20,6 +20,13 @@ llmtest mcp-scenario-eval \
   --defense none --defense sentinel \
   --lang en --proxy-mode --json
 
+# Graded-action A/B (opt-in; default response_mode=block unchanged).
+# Softens BLOCK of harmless local writes → QUARANTINE; τ/weights/S3 unchanged.
+llmtest mcp-scenario-eval \
+  --out-dir /tmp/mcp_eval_graded \
+  --defense oberih --defense oberih_graded \
+  --lang en --json
+
 # Multi-variant expansion for meaningful Wilson CIs (min_n default 5)
 llmtest mcp-scenario-eval \
   --out-dir /tmp/mcp_eval_var \

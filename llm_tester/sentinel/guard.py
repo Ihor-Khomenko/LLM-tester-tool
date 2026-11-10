@@ -364,6 +364,28 @@ class SentinelGuard:
                 ),
             },
         )
+        # Opt-in graded response: soften BLOCK of harmless local writes only.
+        # Cascade risk / τ / weights are unchanged — action rewrite only.
+        if (self.policy.response_mode or "block").lower().strip() in (
+            "graded",
+            "quarantine",
+            "tiered",
+        ):
+            from llm_tester.sentinel.graded import (
+                apply_graded_decision,
+                collect_tainted_tokens,
+            )
+
+            result = apply_graded_decision(
+                result,
+                call,
+                response_mode=self.policy.response_mode,
+                quarantine_dir=str(
+                    getattr(self.policy, "quarantine_dir", None)
+                    or "/tmp/oberih-quarantine"
+                ),
+                tainted_tokens=sorted(collect_tainted_tokens(self.store)),
+            )
         self.logger.log(result)
         return result
 

@@ -7,11 +7,13 @@ Transparent JSON-RPC relay between an MCP client and a real MCP server.
 Intercepts:
 
 * ``tools/list`` responses → **T0** registration checks
-* ``tools/call`` requests → **T2** call checks (may short-circuit: block)
+* ``tools/call`` requests → **T2** call checks (may short-circuit: block;
+  under ``response_mode: graded``, may quarantine harmless local writes)
 * ``tools/call`` responses → **T1** output checks (block / sanitize / allow)
 
-Actions: **block**, **sanitize**, **allow**. Writes JSONL audit logs with
-per-hook latency. Config via YAML (``threshold`` default 0.7; S4 optional).
+Actions: **block**, **quarantine**, **sanitize**, **allow**. Writes JSONL
+audit logs with per-hook latency. Config via YAML (``threshold`` default 0.7;
+S4 optional; ``response_mode`` default ``block``).
 
 Usage::
 
@@ -226,6 +228,8 @@ class SentinelProxy:
         # HTTP: stash out-of-order responses / skip notifications without desync.
         self._http_stash: Dict[Any, Dict[str, Any]] = {}
         self._http_notifications: List[Dict[str, Any]] = []
+        # When T2 quarantines a write, hold the rewritten request to forward.
+        self._forward_rewrite: Optional[Dict[str, Any]] = None
         # Cumulative guard overhead (ms) for tests / metrics.
         self.overhead_ms: float = 0.0
 
@@ -338,10 +342,41 @@ class SentinelProxy:
                 f"Oberih blocked tool call '{name}': {reasons} "
                 f"(risk={decision.risk_score:.2f}, stage={decision.stage})",
             )
+        # Graded quarantine: rewrite path into sandbox dir, then forward.
+        if decision.decision == Decision.QUARANTINE:
+            from llm_tester.sentinel.graded import rewrite_call_for_quarantine
+
+            qcall = rewrite_call_for_quarantine(call, decision)
+            self.audit.log(
+                event="t2_quarantine",
+                checkpoint="T2",
+                tool=name,
+                action="quarantine",
+                risk_score=decision.risk_score,
+                reasons=list(decision.reasons or []),
+                overhead_ms=0.0,
+                original_path=(decision.meta or {}).get("original_path"),
+                quarantine_path=(decision.meta or {}).get("quarantine_path"),
+            )
+            # Forward a rewritten request so the backend writes into quarantine.
+            params = dict(msg.get("params") or {})
+            params["arguments"] = dict(qcall.arguments or {})
+            rewritten = dict(msg)
+            rewritten["params"] = params
+            if "id" in rewritten:
+                self._pending_calls[rewritten["id"]] = qcall
+            self._forward_rewrite = rewritten
+            return None
         # Allow / sanitize path: remember id for T1 on response.
         if "id" in msg:
             self._pending_calls[msg["id"]] = call
         return None
+
+    def _take_forward_message(self, original: Dict[str, Any]) -> Dict[str, Any]:
+        """Return quarantine-rewritten request if pending, else ``original``."""
+        rewritten = self._forward_rewrite
+        self._forward_rewrite = None
+        return rewritten if rewritten is not None else original
 
     def _apply_t0_to_tools_list(
         self,
@@ -469,7 +504,8 @@ class SentinelProxy:
         blocked = self._handle_host_message(host_msg)
         if blocked is not None:
             return blocked
-        backend_resp = backend_handler(host_msg)
+        forwarded = self._take_forward_message(host_msg)
+        backend_resp = backend_handler(forwarded)
         return self._handle_backend_message(backend_resp)
 
     def _terminate_backend(self, *, wait_s: float = 0.5) -> None:
@@ -522,7 +558,9 @@ class SentinelProxy:
                     self._write_host(_encode(replacement))
                     continue
                 try:
-                    self._proc.stdin.write(_encode(msg))
+                    self._proc.stdin.write(
+                        _encode(self._take_forward_message(msg))
+                    )
                     self._proc.stdin.flush()
                 except (BrokenPipeError, ValueError):
                     stop.set()
@@ -650,13 +688,14 @@ class SentinelProxy:
                         out = blocked
                     else:
                         assert proxy._proc and proxy._proc.stdin and proxy._proc.stdout
-                        proxy._proc.stdin.write(_encode(msg))
+                        fwd = proxy._take_forward_message(msg)
+                        proxy._proc.stdin.write(_encode(fwd))
                         proxy._proc.stdin.flush()
-                        if "id" not in msg:
+                        if "id" not in fwd:
                             # Client notification — no correlated response.
                             out = {"jsonrpc": "2.0", "result": {"ok": True}}
                         else:
-                            out = proxy._read_correlated_backend_response(msg.get("id"))
+                            out = proxy._read_correlated_backend_response(fwd.get("id"))
                 payload = json.dumps(out, ensure_ascii=False).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

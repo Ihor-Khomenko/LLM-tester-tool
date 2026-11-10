@@ -68,6 +68,12 @@ high_risk_action: block
 # Opt-in decision-policy experiment (default preserves historical hard-block).
 soft_s3_allow_without_s4: false
 
+# Graded action A/B (default ``block``). ``graded`` quarantines harmless
+# local file writes instead of hard-blocking; exfil/secret writes stay blocked.
+# Defense arm: ``oberih_graded`` / ``--defense oberih_graded``.
+response_mode: block
+quarantine_dir: /tmp/oberih-quarantine
+
 t0_semantic_diff_threshold: 0.35
 t0_block_on_hash_mismatch: true
 
