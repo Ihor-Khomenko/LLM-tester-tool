@@ -5,17 +5,57 @@ R="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${OBERIH_TESTS_ROOT:-${RESEARCH_ROOT:-$(dirname "$R")}}"
 export OBERIH_RUNNER_ROOT="$R" OBERIH_TESTS_ROOT="$ROOT" RESEARCH_ROOT="$ROOT"
 
-# Resolve interpreter + llm_tester PYTHONPATH from policy.yaml / env (Mac defaults kept in policy).
-if [ -n "${OBERIH_VENV_PYTHON:-${OBERIH_PYTHON:-}}" ] && [ -x "${OBERIH_VENV_PYTHON:-${OBERIH_PYTHON}}" ]; then
-  PY="${OBERIH_VENV_PYTHON:-$OBERIH_PYTHON}"
+# awk-based policy field reader (no Python import required for bootstrap paths).
+_policy_field() {
+  # Usage: _policy_field <key>  -> first bare scalar value for top-level key
+  local key="$1"
+  awk -v k="$key" '
+    $0 ~ "^[[:space:]]*"k":[[:space:]]*" {
+      line=$0
+      sub("^[[:space:]]*"k":[[:space:]]*", "", line)
+      # drop inline comments
+      sub(/[[:space:]]+#.*$/, "", line)
+      gsub(/["'\'']/, "", line)
+      # take first token (YAML scalar)
+      gsub(/[[:space:]]+.*/, "", line)
+      if (length(line) > 0) { print line; exit }
+    }
+  ' "$R/policy.yaml" 2>/dev/null || true
+}
+
+# Resolve interpreter from env, else policy.venv under workspace, else python3.
+if [ -n "${OBERIH_VENV_PYTHON:-}" ] && [ -x "${OBERIH_VENV_PYTHON}" ]; then
+  PY="${OBERIH_VENV_PYTHON}"
+elif [ -n "${OBERIH_PYTHON:-}" ] && [ -x "${OBERIH_PYTHON}" ]; then
+  PY="${OBERIH_PYTHON}"
 else
-  VENV_PY="$(python3 -c "import os,sys; sys.path.insert(0,r'$R/lib'); from common import venv_python; print(venv_python() or '')" 2>/dev/null || true)"
+  VENV_REL="$(_policy_field venv)"
+  VENV_PY=""
+  if [ -n "$VENV_REL" ]; then
+    case "$VENV_REL" in
+      /*) VENV_CAND="${VENV_REL}/bin/python" ;;
+      *)  VENV_CAND="${ROOT}/${VENV_REL}/bin/python" ;;
+    esac
+    if [ -x "$VENV_CAND" ]; then VENV_PY="$VENV_CAND"; fi
+  fi
+  if [ -z "$VENV_PY" ]; then
+    VENV_PY="$(python3 -c "import os,sys; sys.path.insert(0,r'$R/lib'); from common import venv_python; print(venv_python() or '')" 2>/dev/null || true)"
+  fi
   if [ -n "$VENV_PY" ] && [ -x "$VENV_PY" ]; then PY="$VENV_PY"; else PY=python3; fi
 fi
 if [ -n "${LLM_TESTER_ROOT:-}" ]; then
   export PYTHONPATH="$LLM_TESTER_ROOT"
 else
-  LT="$("$PY" -c "import sys; sys.path.insert(0,r'$R/lib'); from common import llm_tester_root; print(llm_tester_root())" 2>/dev/null || echo "$ROOT/LLM-tester-tool-fafd500")"
+  LT_REL="$(_policy_field llm_tester_dir)"
+  if [ -n "$LT_REL" ]; then
+    case "$LT_REL" in
+      /*) LT_DEFAULT="$LT_REL" ;;
+      *)  LT_DEFAULT="$ROOT/$LT_REL" ;;
+    esac
+  else
+    LT_DEFAULT="$ROOT/LLM-tester-tool-fafd500"
+  fi
+  LT="$("$PY" -c "import sys; sys.path.insert(0,r'$R/lib'); from common import llm_tester_root; print(llm_tester_root())" 2>/dev/null || echo "$LT_DEFAULT")"
   export PYTHONPATH="$LT"
 fi
 

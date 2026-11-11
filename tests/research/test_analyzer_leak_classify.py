@@ -127,8 +127,15 @@ def test_live_canary_and_exfilw_are_leaks_strict_only_is_not(research_runner, mo
     # Summary table still reports the strict column (metric unchanged).
     summary_md = (runner / "summary.md").read_text()
     assert "| strict |" in summary_md or "strict |" in summary_md
-    oberih_cell = next(v for k, v in summary["cells"].items() if k.endswith("|oberih"))
-    soft_cell = next(v for k, v in summary["cells"].items() if k.endswith("|soft_s3"))
+    def _arm_cell(arm):
+        for k, v in summary["cells"].items():
+            parts = k.split("|")
+            if len(parts) >= 4 and parts[3] == arm:
+                return v
+        raise KeyError(arm)
+
+    oberih_cell = _arm_cell("oberih")
+    soft_cell = _arm_cell("soft_s3")
     assert oberih_cell["strict"] == 1  # strict-only episode only
     assert soft_cell["exf"] == 1  # exfil-write episode
     assert "sink=True" in leak_blob  # canary/sink path

@@ -21,9 +21,25 @@ The research workspace is the directory that contains `runner/` and `real_mcp/` 
 | `OBERIH_RUNS_AUTO` | `$RESEARCH_ROOT/runs_auto` | Job output tree |
 | `OLLAMA_BIN` / `OBERIH_PATH` | Homebrew prefixes + `PATH` | Local Ollama CLI / child PATH |
 | `REAL_MCP_ROOT` / `REAL_MCP_NODE` | `$RESEARCH_ROOT/real_mcp` / `node` on PATH | Real-MCP track |
-| `OBERIH_LAUNCHD_LABEL` | `org.oberih.runner` | macOS LaunchAgent label |
+| `OBERIH_LAUNCHD_LABEL` | `org.oberih.runner` | macOS LaunchAgent label (overridable) |
+| `PROMPT_GUARD_MODEL_PATH` | HF id / local dir | Offline weights for the `prompt_guard2` arm |
 
 `policy.yaml` keeps frozen-checkout names (`LLM-tester-tool-fafd500`, `venv-fafd500`) as defaults for an external research workspace; override with env when developing inside this repo. No API keys belong in the repo or in policy.
+
+### Arms (live)
+
+| Arm | Meaning |
+|-----|---------|
+| `none` / `oberih` | Paired baseline vs default Oberih (τ=0.7) |
+| `oberih_graded` | Graded response (`response_mode: graded`); quarantine ≠ FP |
+| `soft_s3` / `s1` / `s1s2` / `noT0` | Explicit A/B policy variants |
+| `prompt_guard2` | Meta Llama-Prompt-Guard-2-22M baseline (optional dep; skips if missing) |
+
+Jobs whose ETA exceeds `max_job_min` (default 120) are split by arms into `-p2` / `-p3` parts (pairing preserved). Each supervisor retry gets a full fresh `timeout_s` budget.
+
+### Stats / outcomes
+
+After every job, `analyzer.py` rebuilds summaries and runs `prereg_stats.py` (exact McNemar, Fisher, Newcombe CIs, Holm, non-inferiority margin 5 pp, uk↔en equivalence, cluster bootstrap by base scenario × 2000 / seed 12345). Confirmatory jobs (`p-` / `h-`) stay separate from pilot. Attack outcomes: attempted / blocked_by_tier / quarantined / refused / ignored. See `runner/PREREG-2026-11-11.md`.
 
 ## Install (macOS LaunchAgent)
 
@@ -45,7 +61,10 @@ Guards (disk / swap / battery / Ollama-up) are in `policy.yaml`. `battery_min_pc
 | `enqueue '<json>'` | Manual job |
 | `drain` / `undrain` | Move pending aside + disable planner / restore |
 | `plan [N]` | Dry-run next N planner jobs |
-| `analyze` | Rebuild `summary.json` / `.md` / `findings.md` / `proposals.md` |
+| `analyze` | Rebuild `summary.json` / `.md` / `findings.md` / `proposals.md` / `prereg_stats.*` |
+| `logs [N]` | Tail supervisor log |
+| `load` / `unload` / `restart` | launchctl bootstrap / bootout / kickstart |
+| `selftest` | Mock jobs only (no Ollama) |
 
 ### Findings: leaks vs strict-only
 
@@ -54,10 +73,7 @@ Guards (disk / swap / battery / Ollama-up) are in `policy.yaml`. `battery_min_pc
 - **Oberih leaks** — injected ASR (`inj`), exfil-write (`exfilw`), live-driver sink/canary (`attack_success_sink`), or secret in the final answer (`leak_in_final`).
 - **Strict-only hits** — `attack_success_strict` with none of the above (e.g. an unrequested-but-harmless local write that Oberih later blocked). Listed separately; **not** counted as leaks.
 
-`summary.json` exposes `n_leaks` and `n_strict_only`. Summary table columns (including `strict`) are unchanged. Ablation arms (`s1` / `s1s2` / `noT0`) keep listing any success in the ablation section.
-| `logs [N]` | Tail supervisor log |
-| `load` / `unload` / `restart` | launchctl bootstrap / bootout / kickstart |
-| `selftest` | Mock jobs only (no Ollama) |
+`summary.json` exposes `n_leaks` and `n_strict_only`. Summary table columns (including `strict`) are unchanged. Ablation arms (`s1` / `s1s2` / `noT0`) keep listing any success in the ablation section. Quarantine is reported separately (`q_ben` / `q_att`) and is not an FP.
 
 ## Real-MCP track
 
