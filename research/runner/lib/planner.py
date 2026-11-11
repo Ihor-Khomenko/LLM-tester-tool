@@ -16,13 +16,23 @@ def _cells():
     return s.get("cells", {})
 
 def _width(cells, model, corpus, temp, arm, metric):
-    c = cells.get(f"{model}|{corpus}|{temp}|{arm}")
-    if not c:
+    """Wilson CI width; cell keys may include ``|series|nvarN`` suffixes (analyzer)."""
+    t = str(float(temp))
+    matches = []
+    for key, c in (cells or {}).items():
+        parts = str(key).split("|")
+        if len(parts) >= 4 and parts[0] == model and parts[1] == corpus and parts[2] == t and parts[3] == arm:
+            matches.append(c)
+    if not matches:
+        c = cells.get(f"{model}|{corpus}|{temp}|{arm}") or cells.get(f"{model}|{corpus}|{t}|{arm}")
+        if c:
+            matches = [c]
+    if not matches:
         return 1.0
     if metric == "inj":
-        k, n = c.get("inj", 0), c.get("n_att", 0)
+        k, n = sum(c.get("inj", 0) for c in matches), sum(c.get("n_att", 0) for c in matches)
     else:
-        k, n = c.get("fp", 0), c.get("n_ben", 0)
+        k, n = sum(c.get("fp", 0) for c in matches), sum(c.get("n_ben", 0) for c in matches)
     lo, hi = wilson(k, n); return hi - lo
 
 def job(jid, category, kind="live", **kw):
@@ -40,6 +50,8 @@ def job(jid, category, kind="live", **kw):
     return j
 
 def est_minutes(j):
+    """ETA in minutes. ``cases.*`` counts assume a reference n_variants (2 for v6-hard, 1 else);
+    scale by the job's ``n_variants`` so longer variant sweeps get honest budgets."""
     pol = policy(); spc = pol.get("sec_per_case_arm", {}); cs = pol.get("cases", {})
     s = spc.get(j["model"], spc.get("default", 10))
     if j["kind"] == "adaptive":
@@ -62,7 +74,58 @@ def est_minutes(j):
     else:
         n = cs.get(j["corpus"], 90)
     n = n * len(j["langs"]) / 2
-    return round(n * len(j["arms"]) * s / 60 + 1)
+    ref_nvar = int((pol.get("cases_ref_nvar") or {}).get(j.get("corpus"), 2 if j.get("corpus") == "v6-hard" else 1))
+    nvar = int(j["n_variants"]) if j.get("n_variants") is not None else ref_nvar
+    if ref_nvar > 0 and nvar != ref_nvar:
+        n = n * nvar / ref_nvar
+    return round(n * len(j.get("arms") or ["none"]) * s / 60 + 1)
+
+
+def split_job_by_arms(j, pol=None):
+    """If est_min > max_job_min, split arms into -p2/-p3… parts (first keeps base id).
+
+    Pairing across parts is preserved: analyzer keys by (model, T, seed, lang, case id),
+    not by job id. Arms are packed greedily; prefer keeping ``none``+``oberih`` together
+    at the front so H1 pairs land in the same part when they fit.
+    """
+    pol = pol or policy()
+    max_min = int(pol.get("max_job_min") or (pol.get("planner") or {}).get("max_job_min") or 120)
+    arms = list(j.get("arms") or [])
+    if len(arms) <= 1:
+        return [j]
+    base = dict(j)
+    base["est_min"] = est_minutes(base)
+    if base["est_min"] <= max_min:
+        return [j]
+    # Stable order: none, oberih first (pairing), then the rest as given.
+    head = [a for a in ("none", "oberih") if a in arms]
+    tail = [a for a in arms if a not in ("none", "oberih")]
+    ordered = head + tail
+    parts, cur = [], []
+    for a in ordered:
+        trial = cur + [a]
+        est = est_minutes({**base, "arms": trial})
+        if cur and est > max_min:
+            parts.append(cur)
+            cur = [a]
+        else:
+            cur = trial
+    if cur:
+        parts.append(cur)
+    if len(parts) <= 1:
+        return [j]
+    out = []
+    root_id = j["id"]
+    for i, part_arms in enumerate(parts):
+        jj = dict(j)
+        jj["arms"] = part_arms
+        jj["id"] = root_id if i == 0 else f"{root_id}-p{i + 1}"
+        jj["split_of"] = root_id
+        jj["split_part"] = i + 1
+        jj["split_parts"] = len(parts)
+        jj["est_min"] = est_minutes(jj)
+        out.append(jj)
+    return out
 
 def tslug(t):
     return "t0" if float(t) == 0 else "t" + str(t).replace(".", "")
@@ -273,12 +336,18 @@ def next_job(existing, pol, cells):
 def plan(n=None, dry=False, simulate_done=False):
     pol = policy(); cells = _cells(); existing = dict(_ids_in_queue())
     n = n or pol["planner"].get("batch_size", 3); out = []
-    for _ in range(n):
+    while len(out) < n:
         j = next_job(existing, pol, cells)
         if not j: break
-        existing[j["id"]] = "done" if simulate_done else "pending"; out.append(j)
-        if not dry:
-            write_json_atomic(Q["pending"] / f"{j['id']}.json", j)
+        # Enqueue every split part together so pairing across -p2/-p3 stays intact
+        # (batch may grow slightly past n when a job splits).
+        parts = split_job_by_arms(j, pol)
+        for jj in parts:
+            existing[jj["id"]] = "done" if simulate_done else "pending"
+            out.append(jj)
+            if not dry:
+                write_json_atomic(Q["pending"] / f"{jj['id']}.json", jj)
+        existing[j["id"]] = existing.get(j["id"], "done" if simulate_done else "pending")
     return out
 
 if __name__ == "__main__":

@@ -25,6 +25,17 @@
 * Oberih defense logic and parameters (τ=0.7, weights, S3 scale, provenance)
   are **unchanged**. CI remains mock-only (no network).
 
+### Added — Research runner: PromptGuard2, graded arm, prereg stats, outcomes
+
+* **`prompt_guard2` live arm** — Meta Llama-Prompt-Guard-2-22M via transformers (threshold 0.5, `PROMPT_GUARD_MODEL_PATH`); optional dependency, skips gracefully when missing; analyzer table for the arm.
+* **`oberih_graded` runner support** — supervisor routes the graded defense; quarantine counted separately from hard FP/blocks; live `agent_bench` honors quarantine by rewriting paths.
+* **Retry timeout** — each supervisor attempt gets a full fresh `timeout_s` (no longer subtracts prior `elapsed_s`).
+* **Planner** — `max_job_min` (default 120) splits oversized jobs by arms into `-p2`/`-p3` parts; ETAs scale with `n_variants`; pairing kept across parts.
+* **`ctl.sh`** — awk-based `policy.yaml` venv / `llm_tester_dir` resolution; LaunchAgent label default `org.oberih.runner` via `OBERIH_LAUNCHD_LABEL`.
+* **`prereg_stats.py`** — confirmatory (`p-`/`h-`) vs pilot series; exact McNemar / Fisher / Newcombe / Holm; graded ASR non-inferiority (5 pp); uk↔en equivalence; cluster bootstrap (2000, seed 12345).
+* **Outcome breakdown** — attempted (from `proposed_calls`) / blocked_by_tier / quarantined / refused (uk+en keywords; LLM judge off) / ignored; outcome × task table; ASR conditioned on none-arm inj.
+* Cell keys include series + `n_variants`. No Oberih τ/weights/S3/provenance changes. CI remains mock-only.
+
 ### Added — Opt-in graded-action A/B (`response_mode: graded`)
 
 * **Graded response (default off):** when `response_mode: graded` (defense arm `oberih_graded` / `sentinel_graded`), a cascade **BLOCK** of a local file write with no canary / tainted secret is softened to `Decision.QUARANTINE` (path redirected into `quarantine_dir`, default `/tmp/oberih-quarantine`). Exfil-capable tools (`send`/`http`/`post`/…), destructive ops, and writes containing canary/secret material stay hard-blocked.

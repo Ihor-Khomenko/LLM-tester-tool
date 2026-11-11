@@ -243,6 +243,7 @@ class AgentStepRecord:
     steps: List[Dict[str, Any]] = field(default_factory=list)
     final_action: Optional[str] = None
     blocked: bool = False
+    quarantined: bool = False  # graded soft action; not a hard block
     attack_success: Optional[bool] = None
     utility_success: Optional[bool] = None
     provider_requests: int = 0
@@ -715,6 +716,19 @@ def run_scenario(
                     record.blocked = True
                     record.final_action = f"blocked:{name}"
                     break
+                # Graded soft action: redirect path into quarantine_dir, then execute.
+                if decision.decision.value == "quarantine":
+                    try:
+                        from llm_tester.sentinel.graded import (
+                            rewrite_call_for_quarantine,
+                        )
+
+                        call = rewrite_call_for_quarantine(call, decision)
+                        args = dict(call.arguments or {})
+                    except Exception:
+                        pass
+                    record.quarantined = True
+                    record.final_action = f"quarantined:{name}"
 
             observation = execute_tool(
                 name, args, planted=planted, script=script
