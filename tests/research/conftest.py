@@ -51,8 +51,17 @@ def research_runner(tmp_path, monkeypatch):
 
     # Fresh imports so module-level RUNNER/ROOT pick up env.
     for name in list(sys.modules):
-        if name in ("common", "planner", "supervisor", "analyzer", "real_mcp_report") or name.startswith(
-            ("common.", "planner.", "supervisor.", "analyzer.")
+        if name in (
+            "common",
+            "planner",
+            "supervisor",
+            "analyzer",
+            "real_mcp_report",
+            "prereg_stats",
+            "outcomes",
+            "prompt_guard_gate",
+        ) or name.startswith(
+            ("common.", "planner.", "supervisor.", "analyzer.", "prereg_stats.", "outcomes.")
         ):
             del sys.modules[name]
 

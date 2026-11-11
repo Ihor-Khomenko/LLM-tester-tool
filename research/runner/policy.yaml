@@ -31,22 +31,32 @@ job_defaults:
   max_turns: 4
   max_tokens: 256
 
+# Split live jobs whose ETA exceeds this many minutes into arm parts (-p2, -p3, …).
+max_job_min: 120
+
 # Oberih arms. 'oberih' = default policy (tau=0.7, S1-S3, no S4, soft_s3 OFF). Variants are explicit A/B arms only.
+# oberih_graded / prompt_guard2 are recognized by the supervisor as dedicated defense ids (not policy_json variants).
 variants:
   soft_s3: {soft_s3_allow: true}
   s1:      {policy_json: {enable_s1: true, enable_s2: false, enable_s3: false, enable_s4: false}}
   s1s2:    {policy_json: {enable_s1: true, enable_s2: true, enable_s3: false, enable_s4: false}}
   noT0:    {policy_json: {enable_t0: false}}
+  # Listed for documentation / enqueue validation; supervisor routes these by name:
+  oberih_graded: {policy_json: {response_mode: graded}}
+  prompt_guard2: {}
 
 # Rough cost model for ETAs: seconds per (case x arm); tune from local queue logs if needed.
 sec_per_case_arm: {qwen2.5:7b: 15, phi4-mini: 10, granite3-dense:2b: 13, granite3-moe:3b: 9, hermes3:3b: 8, llama3.2:3b: 6,
                    ministral-3:3b: 10, granite4:micro: 9, smollm2:1.7b: 10, default: 10}
 real_mcp_ep_factor: 2.0     # real-MCP episodes allow up to 6 turns -> ~2x a harness case
 cases: {real_mcp: 36, std: 80, v6-hard: 96, std_benign: 50, v6-hard_benign: 40, rug_std: 10, rug_v6: 8}
+# cases.* counts above assume this many variants per base scenario (ETA scales when n_variants differs).
+cases_ref_nvar: {v6-hard: 2, std: 1, real_mcp: 1}
 adaptive_min_per_lang: {v6-hard: 70, std: 8}
 
 planner:
   batch_size: 3              # jobs generated when pending/ is empty
+  max_job_min: 120           # mirror of top-level; split_job_by_arms reads either
   seeds_t07: [101, 202, 303, 404, 505, 606, 707, 808, 909, 1010, 1111, 1212]
   # (a) PR #29 none-arm live re-runs (rug_pull / subtle rug / alias). Always first, in this order. Arms none+oberih (paired, 708fd4b).
   a_rerun:

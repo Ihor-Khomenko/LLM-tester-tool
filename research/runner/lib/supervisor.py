@@ -90,11 +90,23 @@ def steps_for(job, pol, outdir):
                "--max-turns", str(jd.get("max_turns", 4)), "--max-tokens", str(jd.get("max_tokens", 256)), "--run-tag", job["id"], "--out", str(out)]
         S.append(("adaptive", out, cmd, {"none": "none", "sentinel": "oberih"}, "adaptive"))
         return S
+    # External baseline arms (not Oberih policy variants): pass defense name through.
+    EXTERNAL = {"prompt_guard2", "prompt_guard", "pg2"}
+    # Graded Oberih: dedicated defense id so response_mode=graded is set in _build_defense.
+    GRADED = {"oberih_graded", "sentinel_graded", "graded"}
     base = [a for a in job["arms"] if a in ("none", "oberih")]
     groups = []
     if base: groups.append(("base", ",".join("none" if a == "none" else "sentinel" for a in base), {"none": "none", "sentinel": "oberih"}, {}))
     for a in job["arms"]:
         if a in ("none", "oberih"): continue
+        al = a.lower().replace("-", "_")
+        if al in EXTERNAL or a in EXTERNAL:
+            dname = "prompt_guard2"
+            groups.append((dname, dname, {dname: "prompt_guard2"}, {}))
+            continue
+        if al in GRADED or a in GRADED:
+            groups.append(("oberih_graded", "oberih_graded", {"oberih_graded": "oberih_graded"}, {}))
+            continue
         v = (pol.get("variants") or {}).get(a)
         if v is None: raise ValueError(f"unknown arm {a}")
         groups.append((a, "sentinel", {"sentinel": a}, v))
@@ -197,7 +209,8 @@ def run_job(job, pol, check_legacy=True):
                      for name, out, cmd, dmap, kind in S}
     meta.setdefault("timings", {})
     write_json_atomic(outdir / "meta.json", meta)
-    deadline = time.time() + int(job.get("timeout_s", 10800)) - int(job.get("elapsed_s", 0))
+    # Each retry attempt gets a full fresh timeout budget (do not subtract prior elapsed_s).
+    deadline = time.time() + int(job.get("timeout_s", 10800))
     env = child_env(pol); t_job = time.time()
     for name, out, cmd, dmap, kind in S:
         if (meta["timings"].get(name) or {}).get("rc") == 0:
