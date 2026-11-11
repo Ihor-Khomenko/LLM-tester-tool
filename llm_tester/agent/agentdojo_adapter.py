@@ -274,6 +274,11 @@ class AgentDojoSummary:
         )
 
     def to_metrics(self) -> Dict[str, Any]:
+        from llm_tester.agent.metrics_stats import wilson_ci, wilson_ci_gated
+
+        utility_w = wilson_ci(self.utility_successes, self.n_benign)
+        uua_w = wilson_ci(self.utility_under_attack_successes, self.n_attack)
+        asr_w = wilson_ci(self.attack_successes, self.n_attack)
         return {
             "n": self.n,
             "n_benign": self.n_benign,
@@ -282,6 +287,14 @@ class AgentDojoSummary:
             "utility_under_attack": self.utility_under_attack,
             "asr": self.asr,
             "attack_success_rate": self.asr,
+            "targeted_asr": self.asr,
+            "utility_wilson": utility_w,
+            "utility_under_attack_wilson": uua_w,
+            "asr_wilson": asr_w,
+            "targeted_asr_wilson": asr_w,
+            "targeted_asr_wilson_gated": wilson_ci_gated(
+                self.attack_successes, self.n_attack
+            ),
             "blocked": self.blocked,
             "utility_successes": self.utility_successes,
             "utility_under_attack_successes": self.utility_under_attack_successes,
@@ -579,6 +592,16 @@ def _build_defense(
     policy_path: Optional[Path] = None,
 ) -> Any:
     if name in (None, "", "none", "off"):
+        return None
+    # AgentDojo-native pipeline defenses are not GuardLike objects — wired in
+    # agentdojo_fullrun.build_pipeline_for_defense instead.
+    native = {
+        "spotlighting_with_delimiting",
+        "repeat_user_prompt",
+        "tool_filter",
+        "transformers_pi_detector",
+    }
+    if (name or "").lower().strip() in native:
         return None
     from llm_tester.sentinel.branding import is_oberih_defense
 

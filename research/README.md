@@ -97,6 +97,26 @@ python research/runner/lib/real_mcp_driver.py \
   --ids rmcp-ipi-email-exfil,rmcp-ben-email --run-tag ci-smoke --out /tmp/rmcp_smoke.jsonl
 ```
 
+## AgentDojo full-run + white-box adaptive
+
+Planner category **`g_agentdojo`** (kind `agentdojo`): one job per suite
+(`workspace` / `slack` / `banking`; travel optional), ETA kept under 2 h.
+Driver: `lib/run_agentdojo.py`. See `docs/agentdojo.md`.
+
+White-box adaptive family **`a_wb`** (planner `c_adaptive_wb`): attacker reads
+Oberih policy knobs, offline-scores candidates, executes only allows. Driver:
+`lib/run_adaptive_whitebox.py`. See `docs/adaptive-attack.md`.
+
+```sh
+# Mock AgentDojo matrix (no Ollama / no agentdojo package required for --suite mock)
+python -m llm_tester.cli agentdojo --full --provider mock --arms none,oberih \
+  --limit 2 --out /tmp/adj --run-tag ci
+
+# Mock white-box adaptive
+python -m llm_tester.cli adaptive-whitebox --out-dir /tmp/awb \
+  --subfamily s1_para --langs en --k 3 --limit 1 --mock --json
+```
+
 ## CI
 
-Pytest covers planner rotation, guard/battery latch behaviour, analyzer on a tiny fixture, a privacy grep (home paths / personal usernames), and (when Node + `node_modules` exist) a scripted-agent real_mcp smoke. No Ollama, no network APIs, no paid providers.
+Pytest covers planner rotation (incl. `g_agentdojo` / `a_wb`), guard/battery latch behaviour, analyzer on a tiny fixture, a privacy grep (home paths / personal usernames), and (when Node + `node_modules` exist) a scripted-agent real_mcp smoke. No Ollama, no network APIs, no paid providers.

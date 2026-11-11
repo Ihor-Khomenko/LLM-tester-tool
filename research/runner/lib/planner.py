@@ -55,7 +55,13 @@ def est_minutes(j):
     pol = policy(); spc = pol.get("sec_per_case_arm", {}); cs = pol.get("cases", {})
     s = spc.get(j["model"], spc.get("default", 10))
     if j["kind"] == "adaptive":
+        # White-box (a_wb) can be heavier; policy may override per corpus.
+        if "a_wb" in str((j.get("adaptive") or {}).get("families") or ""):
+            return round(pol.get("adaptive_wb_min_per_lang", {}).get(j.get("corpus", "std"), 50) * len(j["langs"]))
         return round(pol.get("adaptive_min_per_lang", {}).get(j["corpus"], 60) * len(j["langs"]))
+    if j["kind"] == "agentdojo":
+        # One suite × arms × attacks; keep each job under ~2 h.
+        return int(pol.get("agentdojo_min_per_suite", {}).get(j.get("suite", "workspace"), 90))
     if j["kind"] == "mock" or j.get("llm") == "mock":
         return 5
     if j["kind"] == "real_mcp":
@@ -221,19 +227,111 @@ def gen_f(existing, pol, cells):
                arms=list(f.get("arms") or ["none", "oberih", "oberih_gw"]), max_turns=f.get("max_turns", 6), max_tokens=f.get("max_tokens", 400),
                timeout_s=f.get("timeout_s", 7200))
 
-GEN = {"b_seeds": gen_b, "d_variants": gen_d, "c_adaptive": gen_c, "e_benign": gen_e, "f_real_mcp": gen_f}
+def gen_g(existing, pol, cells):
+    """AgentDojo full-run: one job per suite (workspace/slack/banking; travel optional). Est. < 2 h each."""
+    g = pol["planner"].get("g_agentdojo") or {}
+    suites = list(g.get("suites") or ["workspace", "slack", "banking"])
+    if g.get("include_travel") and "travel" not in suites:
+        suites.append("travel")
+    models = list(g.get("models") or ["qwen2.5:7b"])
+    attacks = list(g.get("attacks") or ["important_instructions", "tool_knowledge"])
+    arms = list(g.get("arms") or [
+        "none", "oberih", "oberih_graded",
+        "spotlighting_with_delimiting", "repeat_user_prompt",
+        "tool_filter", "transformers_pi_detector", "prompt_guard2",
+    ])
+    cands = []
+    for i, suite in enumerate(suites):
+        for j, m in enumerate(models):
+            jid = f"g-adj-{suite}-{safe(m)}-t0-s42"
+            if jid in existing:
+                continue
+            cands.append((i, j, suite, m, jid))
+    if not cands:
+        return None
+    _, _, suite, m, jid = sorted(cands)[0]
+    return job(
+        jid, "g_agentdojo", kind="agentdojo", model=m, corpus="agentdojo",
+        suite=suite, temperature=0.0, seed=42, arms=arms,
+        attacks=attacks, langs=["en"], labels=["attack", "benign"],
+        timeout_s=g.get("timeout_s", 7200),
+        llm=g.get("llm", "ollama"),
+        limit=g.get("limit"),
+        max_requests=g.get("max_requests"),
+        translate_injections_uk=bool(g.get("translate_injections_uk", False)),
+        benchmark_version=g.get("benchmark_version", "v1.2.2"),
+    )
+
+def gen_c_wb(existing, pol, cells):
+    """White-box adaptive (a_wb) jobs — uk+en, ASR@1/5/20."""
+    w = pol["planner"].get("c_adaptive_wb") or {}
+    if not w:
+        return None
+    langs = list(w.get("langs") or pol.get("job_defaults", {}).get("langs") or ["uk", "en"])
+    cands = []
+    for i, (m, corp) in enumerate(w.get("pairs") or []):
+        cs = "v6" if corp == "v6-hard" else "std"
+        for lang in langs:
+            for s in w.get("seeds") or [42]:
+                jid = f"c-awb-{cs}-{safe(m)}-{lang}-s{s}"
+                if jid in existing:
+                    continue
+                cands.append((i, lang, s, m, corp, jid))
+    if not cands:
+        return None
+    _, lang, seed, m, corp, jid = sorted(cands)[0]
+    return job(
+        jid, "c_adaptive", kind="adaptive", model=m, corpus=corp, langs=[lang],
+        seed=seed, arms=["oberih"], temperature=0.0 if seed == 42 else 0.7,
+        labels=["attack"],
+        adaptive={
+            "attacker": w.get("attacker", "qwen2.5:7b"),
+            "families": "a_wb",
+            "subfamilies": w.get("subfamilies", "s1_para,provenance_launder,score_shape,multi_turn_split,homoglyph_zw"),
+            "k_para": 0, "k_judge": 0, "k_iter": 0,
+            "k_wb": w.get("k_wb", 20),
+        },
+    )
+
+GEN = {"b_seeds": gen_b, "d_variants": gen_d, "c_adaptive": gen_c, "e_benign": gen_e, "f_real_mcp": gen_f, "g_agentdojo": gen_g}
+
+_PREFIX = {
+    "b_seeds": "b-",
+    "d_variants": "d-",
+    "c_adaptive": "c-",
+    "e_benign": "e-",
+    "f_real_mcp": "f-",
+    "g_agentdojo": "g-",
+}
 
 def next_job(existing, pol, cells):
     j = gen_a(existing, pol)
     if j: return j
+    wb = pol["planner"].get("c_adaptive_wb") or {}
     rot = pol["planner"]["rotation"]
-    counts = {r["category"]: sum(1 for x in existing if x.startswith({"b_seeds": "b-", "d_variants": "d-", "c_adaptive": "c-", "e_benign": "e-", "f_real_mcp": "f-"}[r["category"]]))
-              for r in rot}
+    counts = {
+        r["category"]: sum(
+            1 for x in existing
+            if x.startswith(_PREFIX.get(r["category"], r["category"][:1] + "-"))
+        )
+        for r in rot
+    }
     order = sorted(range(len(rot)), key=lambda i: (counts[rot[i]["category"]] / float(rot[i]["weight"]), i))
     for i in order:
-        j = GEN[rot[i]["category"]](existing, pol, cells)
+        cat = rot[i]["category"]
+        if cat == "c_adaptive" and wb:
+            # When c_adaptive wins the rotation, prefer a white-box (a_wb) job
+            # if any remain (then fall through to grey-box gen_c).
+            jwb = gen_c_wb(existing, pol, cells)
+            if jwb:
+                return jwb
+        gen = GEN.get(cat)
+        if not gen:
+            continue
+        j = gen(existing, pol, cells)
         if j: return j
-    return None
+    # Fallback: remaining white-box jobs after rotation exhausts.
+    return gen_c_wb(existing, pol, cells)
 
 def plan(n=None, dry=False, simulate_done=False):
     pol = policy(); cells = _cells(); existing = dict(_ids_in_queue())

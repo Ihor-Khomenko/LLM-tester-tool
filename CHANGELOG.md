@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added — AgentDojo full-run + white-box adaptive attack (`a_wb`)
+
+* **AgentDojo full-run:** pin `agentdojo==0.1.35` (benchmark **v1.2.2**); suites
+  `workspace` / `slack` / `banking` (`travel` optional); attacks
+  `important_instructions` + `tool_knowledge`. Arms: `none`, `oberih`,
+  `oberih_graded`, AgentDojo natives (`spotlighting_with_delimiting`,
+  `repeat_user_prompt`, `tool_filter`, `transformers_pi_detector`), and
+  optional `prompt_guard2`. Models via local Ollama or OpenAI-compatible
+  routers (`requesty` / `openai_compat`; keys from env only). Sample-size
+  (`--limit`) and request budget (`--max-requests`). Metrics: utility,
+  utility-under-attack, targeted ASR with Wilson CIs. Resumable JSONL keyed
+  by `run_tag` with `code_sha` per row. Optional `--translate-injections-uk`
+  (injection texts only). Runner kind `agentdojo`, planner category
+  `g_agentdojo` (one job per suite, ETA under 2 h). Docs: `docs/agentdojo.md`.
+* **White-box adaptive (`a_wb`):** `llm_tester/attacks/adaptive_whitebox.py` +
+  `llmtest adaptive-whitebox`. Attacker reads S1 / τ / S2 / S3-lite from the
+  Oberih policy object; offline score gate; only allowed candidates execute
+  live. Subfamilies: paraphrase, provenance laundering, score-shaping,
+  multi-turn split, homoglyph/ZW. ASR@1/5/20 + budget-vs-ASR, `uk`/`en`.
+  Runner family `a_wb` (`c_adaptive_wb` / `run_adaptive_whitebox.py`).
+* Oberih defense logic and parameters (τ=0.7, weights, S3 scale, provenance)
+  are **unchanged**. CI remains mock-only (no network).
+
 ### Added — Research runner: PromptGuard2, graded arm, prereg stats, outcomes
 
 * **`prompt_guard2` live arm** — Meta Llama-Prompt-Guard-2-22M via transformers (threshold 0.5, `PROMPT_GUARD_MODEL_PATH`); optional dependency, skips gracefully when missing; analyzer table for the arm.

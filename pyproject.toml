@@ -46,8 +46,9 @@ figures = ["matplotlib>=3.7.0", "numpy>=1.24.0"]
 baselines-prompt-guard = ["transformers>=4.40.0", "torch"]
 # Optional HF detector stack (PromptGuard / similar). Kept out of the base install.
 detectors = ["transformers>=4.40.0", "torch"]
-# AgentDojo real suites (llmtest agentdojo --real). Requires Python >=3.10.
-agentdojo = ["agentdojo>=0.1.35,<0.2; python_version>='3.10'"]
+# AgentDojo real suites (llmtest agentdojo --real / --full). Pins package
+# 0.1.35 (benchmark version v1.2.2). Requires Python >=3.10.
+agentdojo = ["agentdojo==0.1.35; python_version>='3.10'"]
 dev = ["pytest>=7.0", "PyYAML>=6.0", "matplotlib>=3.7.0", "numpy>=1.24.0"]
 all = [
     "llm-guard",

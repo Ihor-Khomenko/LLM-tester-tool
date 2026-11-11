@@ -149,9 +149,15 @@ def injections_for_family(
         text = paraphrase_obfuscate(seed_text, variant=variant)
         return {keys[0]: text, **{k: "" for k in keys[1:]}}
 
+    if fam in ("a_wb", "whitebox", "adaptive_whitebox"):
+        # White-box crafting lives in adaptive_whitebox.craft_candidate;
+        # keep a mild paraphrase seed here for shared adaptive loops.
+        text = paraphrase_obfuscate(seed_text, variant=variant)
+        return {keys[0]: text, **{k: "" for k in keys[1:]}}
+
     raise ValueError(
         f"Unknown attack family {family!r}; "
-        "use important_instructions|a_para|a_split|a_judge|a_iter"
+        "use important_instructions|a_para|a_split|a_judge|a_iter|a_wb"
     )
 
 
@@ -162,4 +168,5 @@ def family_catalog() -> List[str]:
         "a_split",
         "a_judge",
         "a_iter",
+        "a_wb",  # white-box adaptive (see adaptive_whitebox)
     ]

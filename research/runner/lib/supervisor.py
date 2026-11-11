@@ -82,13 +82,49 @@ def steps_for(job, pol, outdir):
         S.append(("real_mcp", out, cmd, {a: a for a in arms}, "real_mcp"))
         return S
     if job["kind"] == "adaptive":
-        a = job.get("adaptive") or {}; out = outdir / "results_adaptive.jsonl"
+        a = job.get("adaptive") or {}
+        fams = a.get("families", "a_para,a_judge,a_iter")
+        if "a_wb" in str(fams):
+            out = outdir / "results_adaptive_wb.jsonl"
+            cmd = [PY, str(L / "run_adaptive_whitebox.py"),
+                   "--model", job["model"], "--attacker-model", a.get("attacker", "qwen2.5:7b"),
+                   "--langs", langs, "--defenses", ",".join(job.get("arms") or ["oberih"]),
+                   "--subfamilies", a.get("subfamilies", "s1_para,provenance_launder,score_shape,multi_turn_split,homoglyph_zw"),
+                   "--k", str(a.get("k_wb", 20)), "--seed", str(job.get("seed", 42)),
+                   "--run-tag", job["id"], "--out", str(out)]
+            if job.get("llm") == "mock":
+                cmd.append("--mock")
+            S.append(("adaptive_wb", out, cmd, {"oberih": "oberih"}, "adaptive"))
+            return S
+        out = outdir / "results_adaptive.jsonl"
         cmd = [PY, str(L / "run_mcp_adaptive_ollama.py"), "--model", job["model"], "--attacker-model", a.get("attacker", "qwen2.5:7b"),
                "--corpus", "v6" if job["corpus"] == "v6-hard" else "std", "--langs", langs, "--defenses", "none,sentinel",
-               "--families", a.get("families", "a_para,a_judge,a_iter"), "--k-para", str(a.get("k_para", 4)), "--k-judge", str(a.get("k_judge", 2)),
+               "--families", fams, "--k-para", str(a.get("k_para", 4)), "--k-judge", str(a.get("k_judge", 2)),
                "--k-iter", str(a.get("k_iter", 3)), "--temperature", str(job.get("temperature", 0.0)), "--seed", str(job.get("seed", 42)),
                "--max-turns", str(jd.get("max_turns", 4)), "--max-tokens", str(jd.get("max_tokens", 256)), "--run-tag", job["id"], "--out", str(out)]
         S.append(("adaptive", out, cmd, {"none": "none", "sentinel": "oberih"}, "adaptive"))
+        return S
+    if job["kind"] == "agentdojo":
+        out = outdir / "results_agentdojo.jsonl"
+        arms = list(job.get("arms") or ["none", "oberih"])
+        attacks = list(job.get("attacks") or ["important_instructions", "tool_knowledge"])
+        cmd = [PY, str(L / "run_agentdojo.py"),
+               "--suite", job.get("suite", "workspace"),
+               "--model", job["model"], "--llm", job.get("llm", "ollama"),
+               "--arms", ",".join(arms), "--attacks", ",".join(attacks),
+               "--benchmark-version", job.get("benchmark_version", "v1.2.2"),
+               "--temperature", str(job.get("temperature", 0.0)),
+               "--seed", str(job.get("seed", 42)),
+               "--run-tag", job["id"], "--out", str(out)]
+        if job.get("limit") is not None:
+            cmd += ["--limit", str(job["limit"])]
+        if job.get("max_requests") is not None:
+            cmd += ["--max-requests", str(job["max_requests"])]
+        if job.get("translate_injections_uk"):
+            cmd.append("--translate-injections-uk")
+        if job.get("base_url"):
+            cmd += ["--base-url", str(job["base_url"])]
+        S.append(("agentdojo", out, cmd, {a: a for a in arms}, "agentdojo"))
         return S
     # External baseline arms (not Oberih policy variants): pass defense name through.
     EXTERNAL = {"prompt_guard2", "prompt_guard", "pg2"}
