@@ -378,14 +378,15 @@ def build_parser() -> argparse.ArgumentParser:
     adj = sub.add_parser(
         "agentdojo",
         help=(
-            "AgentDojo-style suite with Оберіг (Oberih)/baselines as defenses. "
-            "Default --suite mock is offline; --real needs upstream AgentDojo + Ollama"
+            "AgentDojo suite with Оберіг (Oberih)/baselines/native defenses. "
+            "Default --suite mock is offline; --real / --full need "
+            "pip install 'llm-tester[agentdojo]' (pins 0.1.35, benchmark v1.2.2)"
         ),
     )
     adj.add_argument(
         "--suite",
         default="mock",
-        help="mock (CI default) | upstream suite name with --real (e.g. workspace)",
+        help="mock (CI default) | workspace|slack|banking|travel with --real",
     )
     adj.add_argument(
         "--defense",
@@ -393,32 +394,93 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             "none",
             "oberih",
+            "oberih_graded",
             "sentinel",
             "spotlighting",
             "prompt_guard2",
             "progent",
             "task_shield",
+            "spotlighting_with_delimiting",
+            "repeat_user_prompt",
+            "tool_filter",
+            "transformers_pi_detector",
         ],
-        help="Defense plugged into the suite",
+        help="Defense plugged into the suite (Oberih, PromptGuard 2, or AgentDojo native)",
     )
     adj.add_argument(
         "--real",
         action="store_true",
         help=(
-            "Run upstream AgentDojo 0.1.35+ agent pipeline + env "
+            "Run upstream AgentDojo 0.1.35 agent pipeline + env "
             "(requires package). Use --provider mock for CI."
+        ),
+    )
+    adj.add_argument(
+        "--full",
+        action="store_true",
+        help=(
+            "Full matrix: suites workspace/slack/banking × attacks "
+            "important_instructions/tool_knowledge × default arms; "
+            "resumable JSONL under --run-dir (or --out)"
         ),
     )
     adj.add_argument(
         "--benchmark-version",
         default="v1.2.2",
-        help="AgentDojo benchmark version for --real (default v1.2.2)",
+        help="AgentDojo benchmark version for --real/--full (default v1.2.2)",
     )
     adj.add_argument(
         "--attack",
         default="important_instructions",
-        help="AgentDojo attack name for --real injection jobs "
-        "(default important_instructions; 'none' skips injections)",
+        help="AgentDojo attack for --real "
+        "(important_instructions|tool_knowledge|none)",
+    )
+    adj.add_argument(
+        "--attacks",
+        default=None,
+        help="Comma list for --full (default important_instructions,tool_knowledge)",
+    )
+    adj.add_argument(
+        "--arms",
+        default=None,
+        help=(
+            "Comma list of defense arms for --full "
+            "(default none,oberih,oberih_graded,"
+            "spotlighting_with_delimiting,repeat_user_prompt,"
+            "tool_filter,transformers_pi_detector,prompt_guard2)"
+        ),
+    )
+    adj.add_argument(
+        "--suites",
+        default=None,
+        help="Comma list for --full (default workspace,slack,banking)",
+    )
+    adj.add_argument(
+        "--include-travel",
+        action="store_true",
+        help="With --full, also run the optional travel suite",
+    )
+    adj.add_argument(
+        "--translate-injections-uk",
+        action="store_true",
+        help="Optional Ukrainian gloss of injection texts only (not user tasks)",
+    )
+    adj.add_argument(
+        "--run-tag",
+        default="",
+        help="Resume key for JSONL rows (with --full / research runner)",
+    )
+    adj.add_argument(
+        "--max-requests",
+        type=int,
+        default=None,
+        help="Sample/budget cap: stop after this many agent+defense LLM calls",
+    )
+    adj.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="With --full: write resumable results.jsonl under this directory",
     )
     adj.add_argument("--limit", type=int, default=None)
     adj.add_argument("--policy", type=Path, default=None)
@@ -427,11 +489,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=sorted(PROVIDERS.keys()) + ["mock"],
         help=(
-            "Agent LLM for --real: mock (CI default), ollama, openrouter, … "
-            "Also used for task_shield defense"
+            "Agent LLM for --real/--full: mock (CI default), ollama, "
+            "requesty, openai_compat, openrouter, …"
         ),
     )
-    adj.add_argument("--model", default=None, help="e.g. qwen2.5:3b")
+    adj.add_argument(
+        "--model",
+        default=None,
+        help="e.g. qwen2.5:7b, granite3-moe:3b",
+    )
     adj.add_argument("--base-url", default=None)
     adj.add_argument("--json", action="store_true")
     adj.add_argument("--max-retries", type=int, default=5)
@@ -768,7 +834,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Attack family (repeatable): important_instructions|a_para|a_split|"
-            "a_judge|a_iter. Default: a_para,a_iter"
+            "a_judge|a_iter|a_wb. Default: a_para,a_iter. "
+            "For a_wb prefer the adaptive-whitebox command."
         ),
     )
     aa.add_argument(
@@ -809,6 +876,60 @@ def build_parser() -> argparse.ArgumentParser:
         help="Refuse to run without a custom library run_try (live path)",
     )
     aa.add_argument("--json", action="store_true", help="Print summary JSON")
+
+    awb = sub.add_parser(
+        "adaptive-whitebox",
+        help=(
+            "White-box adaptive attack (family a_wb): reads Oberih S1/τ/S2/S3 "
+            "from the policy object; offline score gate; ASR@1/5/20. "
+            "CI uses --mock (no network)."
+        ),
+    )
+    awb.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="Directory for progress.json / results.jsonl / summary.json",
+    )
+    awb.add_argument(
+        "--defense",
+        action="append",
+        dest="defenses",
+        default=None,
+        help="Defense id (repeatable). Default: oberih",
+    )
+    awb.add_argument(
+        "--subfamily",
+        action="append",
+        dest="subfamilies",
+        default=None,
+        help=(
+            "White-box subfamily (repeatable): s1_para|provenance_launder|"
+            "score_shape|multi_turn_split|homoglyph_zw"
+        ),
+    )
+    awb.add_argument(
+        "--langs",
+        default="en,uk",
+        help="Comma list of languages (default en,uk)",
+    )
+    awb.add_argument(
+        "--k",
+        type=int,
+        default=20,
+        help="Max live tries per job after offline gate (default 20)",
+    )
+    awb.add_argument("--seed", type=int, default=42)
+    awb.add_argument("--limit", type=int, default=None, help="Cap seed jobs")
+    awb.add_argument("--run-tag", default="", help="Tag stored on each JSONL row")
+    awb.add_argument("--policy", type=Path, default=None)
+    awb.add_argument(
+        "--mock",
+        action="store_true",
+        default=True,
+        help="Offline mock attacker + scripted live try (default; CI)",
+    )
+    awb.add_argument("--json", action="store_true", help="Print summary JSON")
 
     mse = sub.add_parser(
         "mcp-scenario-eval",
@@ -1729,6 +1850,67 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
             num_thread=getattr(args, "num_thread", None),
         )
 
+    if getattr(args, "full", False):
+        from llm_tester.agent.agentdojo_fullrun import (
+            DEFAULT_ARMS,
+            DEFAULT_ATTACKS,
+            DEFAULT_SUITES,
+            FullRunConfig,
+            run_full_matrix,
+        )
+
+        out_dir = Path(args.out) if args.out else prepare_run_dir(
+            args,
+            "agentdojo",
+            name_parts=["agentdojo", "full", args.run_tag or "matrix"],
+        )
+        suites = (
+            [s.strip() for s in args.suites.split(",") if s.strip()]
+            if args.suites
+            else list(DEFAULT_SUITES)
+        )
+        attacks = (
+            [a.strip() for a in args.attacks.split(",") if a.strip()]
+            if args.attacks
+            else list(DEFAULT_ATTACKS)
+        )
+        arms = (
+            [a.strip() for a in args.arms.split(",") if a.strip()]
+            if args.arms
+            else list(DEFAULT_ARMS)
+        )
+        cfg = FullRunConfig(
+            suites=suites,
+            attacks=attacks,
+            arms=arms,
+            benchmark_version=args.benchmark_version,
+            provider_name=provider_name or "mock",
+            model=args.model,
+            temperature=args.temperature,
+            seed=None if args.no_seed else args.seed,
+            limit=args.limit,
+            max_requests=getattr(args, "max_requests", None),
+            run_tag=args.run_tag or "",
+            translate_injections_uk=bool(
+                getattr(args, "translate_injections_uk", False)
+            ),
+            policy_path=args.policy,
+            include_travel=bool(getattr(args, "include_travel", False)),
+        )
+        try:
+            summary = run_full_matrix(out_dir, config=cfg, llm_provider=llm)
+        except Exception as exc:  # noqa: BLE001
+            print(f"agentdojo --full failed: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(summary, indent=2, default=str))
+        else:
+            print(
+                f"agentdojo --full: {summary.get('n_rows', summary.get('requests_used'))} "
+                f"→ {summary.get('results_path')}"
+            )
+        return 0
+
     if args.real:
         if try_import_agentdojo() is None:
             print(
@@ -1742,19 +1924,44 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
         effective_provider = provider_name or "mock"
         sample_seed = None if args.no_seed else args.seed
         try:
-            summary, results = run_real_agentdojo_suite(
-                args.suite,
-                defense_name=args.defense,
-                llm_provider=llm,
-                provider_name=effective_provider,
-                model=args.model,
-                temperature=args.temperature,
-                policy_path=args.policy,
-                limit=args.limit,
-                seed=sample_seed,
-                benchmark_version=args.benchmark_version,
-                attack_name=args.attack,
-            )
+            from llm_tester.agent.agentdojo_fullrun import run_real_full_suite
+            from llm_tester.agent.agentdojo_fullrun import is_native_agentdojo_defense
+
+            if is_native_agentdojo_defense(args.defense) or getattr(
+                args, "translate_injections_uk", False
+            ) or getattr(args, "max_requests", None):
+                summary, results = run_real_full_suite(
+                    args.suite,
+                    defense_name=args.defense,
+                    attack_name=args.attack,
+                    llm_provider=llm,
+                    provider_name=effective_provider,
+                    model=args.model,
+                    temperature=args.temperature,
+                    policy_path=args.policy,
+                    limit=args.limit,
+                    seed=sample_seed,
+                    benchmark_version=args.benchmark_version,
+                    translate_injections_uk=bool(
+                        getattr(args, "translate_injections_uk", False)
+                    ),
+                    run_tag=getattr(args, "run_tag", "") or "",
+                    max_requests=getattr(args, "max_requests", None),
+                )
+            else:
+                summary, results = run_real_agentdojo_suite(
+                    args.suite,
+                    defense_name=args.defense,
+                    llm_provider=llm,
+                    provider_name=effective_provider,
+                    model=args.model,
+                    temperature=args.temperature,
+                    policy_path=args.policy,
+                    limit=args.limit,
+                    seed=sample_seed,
+                    benchmark_version=args.benchmark_version,
+                    attack_name=args.attack,
+                )
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -1762,7 +1969,7 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
         if args.suite not in ("mock", "default", "ci"):
             print(
                 f"Unknown offline suite {args.suite!r}. Use --suite mock, or "
-                f"--real with an upstream suite name.",
+                f"--real / --full with an upstream suite name.",
                 file=sys.stderr,
             )
             return 2
@@ -1801,6 +2008,8 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
         "num_thread": getattr(args, "num_thread", None),
         "attack": getattr(args, "attack", None) if args.real else None,
         "benchmark_version": args.benchmark_version if args.real else None,
+        "max_requests": getattr(args, "max_requests", None),
+        "run_tag": getattr(args, "run_tag", "") or "",
     }
     finalize_run_dir(
         run_dir,
@@ -1821,6 +2030,49 @@ def cmd_agentdojo(args: argparse.Namespace) -> int:
                 summary,
                 title=f"agentdojo suite={args.suite} defense={args.defense}",
             )
+        )
+    return 0
+
+
+def cmd_adaptive_whitebox(args: argparse.Namespace) -> int:
+    from llm_tester.attacks.adaptive_whitebox import (
+        WHITEBOX_SUBFAMILIES,
+        run_whitebox_eval,
+    )
+
+    defenses = list(args.defenses) if args.defenses else ["oberih"]
+    subs = (
+        list(args.subfamilies)
+        if args.subfamilies
+        else list(WHITEBOX_SUBFAMILIES)
+    )
+    langs = [x.strip() for x in (args.langs or "en,uk").split(",") if x.strip()]
+    try:
+        summary = run_whitebox_eval(
+            Path(args.out_dir),
+            defenses=defenses,
+            subfamilies=subs,
+            langs=langs,
+            k=int(args.k),
+            limit=args.limit,
+            seed=int(args.seed),
+            mock=True,
+            policy_path=args.policy,
+            run_tag=args.run_tag or "",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"adaptive-whitebox failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(summary, indent=2, default=str))
+    else:
+        overall = summary.get("overall") or {}
+        print(
+            f"adaptive-whitebox: n={summary.get('n_results')} "
+            f"ASR@1={(overall.get('ASR@1') or {}).get('p')} "
+            f"ASR@5={(overall.get('ASR@5') or {}).get('p')} "
+            f"ASR@20={(overall.get('ASR@20') or {}).get('p')} → "
+            f"{summary.get('results_path')}"
         )
     return 0
 
@@ -2650,6 +2902,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_import_mcp_sim(args)
     if args.command == "adaptive-attack":
         return cmd_adaptive_attack(args)
+    if args.command == "adaptive-whitebox":
+        return cmd_adaptive_whitebox(args)
     if args.command == "mcp-scenario-eval":
         return cmd_mcp_scenario_eval(args)
     if args.command == "rescore-mcp-live":

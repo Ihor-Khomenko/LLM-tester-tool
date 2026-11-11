@@ -45,6 +45,21 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "base_url_env": "GROQ_BASE_URL",
         "default_model": "llama-3.1-8b-instant",
     },
+    # OpenAI-compatible router (base URL + key from env; e.g. Requesty).
+    "requesty": {
+        "base_url": "https://router.requesty.ai/v1",
+        "api_key_env": "REQUESTY_API_KEY",
+        "base_url_env": "REQUESTY_BASE_URL",
+        "default_model": "openai/gpt-4o-mini",
+    },
+    # Generic OpenAI-compatible endpoint: set OPENAI_COMPAT_BASE_URL + OPENAI_COMPAT_API_KEY.
+    "openai_compat": {
+        "base_url": "http://localhost:11434/v1",
+        "api_key_env": "OPENAI_COMPAT_API_KEY",
+        "base_url_env": "OPENAI_COMPAT_BASE_URL",
+        "default_api_key": "ollama",
+        "default_model": "qwen2.5:7b",
+    },
 }
 
 DEFAULT_TEMPERATURE = 0.0

@@ -14,6 +14,7 @@ controls only untrusted tool outputs and sees an end-to-end outcome bit
 | `a_split` | Split payload across two tool outputs |
 | `a_judge` | Benign / authority framing aimed at S4 |
 | `a_iter` | Attacker-LLM refinement loop (k=3 pilot, k=5 full); early stop |
+| `a_wb` | White-box adaptive (see below); prefer `llmtest adaptive-whitebox` |
 
 ## Metrics
 
@@ -75,3 +76,31 @@ shows a no-defense static ASR of at least ~0.3.
 
 Under `--out-dir`: `progress.json`, `results.jsonl`, `summary.json`
 (same conventions as the daily research box runners).
+
+---
+
+# White-box adaptive attack (`llmtest adaptive-whitebox`, family `a_wb`)
+
+Adaptive attacker that **reads** Oberih S1 signature names, cascade τ,
+S2 provenance / sensitive-arg weights, and S3-lite features from the live
+policy object (not a hardcoded mirror). Loop:
+
+1. Attacker LLM (default local `qwen2.5:7b`; mock rewriter in CI) proposes a rewrite.
+2. Oberih scores the candidate **offline** → decision, reasons, per-signal scores.
+3. Only candidates Oberih **allows** are executed live on the victim.
+
+Subfamilies: `s1_para`, `provenance_launder`, `score_shape`, `multi_turn_split`,
+`homoglyph_zw`. Reports **ASR@1 / ASR@5 / ASR@20**, a budget-vs-ASR curve, and
+per-attempt offline scores for `uk` and `en`. Does **not** change Oberih τ /
+weights / S3 scale / provenance.
+
+```sh
+# CI / offline
+llmtest adaptive-whitebox \
+  --out-dir /tmp/awb_mock \
+  --subfamily s1_para --langs en,uk \
+  --k 5 --limit 2 --mock --json
+```
+
+Research runner: adaptive jobs with `families: a_wb` call
+`research/runner/lib/run_adaptive_whitebox.py` (planner block `c_adaptive_wb`).

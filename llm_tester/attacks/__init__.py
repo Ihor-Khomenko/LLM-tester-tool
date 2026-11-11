@@ -7,6 +7,14 @@ from llm_tester.attacks.adaptive import (
     apply_family,
     run_adaptive_job,
 )
+from llm_tester.attacks.adaptive_whitebox import (
+    WHITEBOX_FAMILY,
+    WHITEBOX_SUBFAMILIES,
+    extract_defense_knowledge,
+    run_whitebox_eval,
+    run_whitebox_job,
+    summarize_whitebox_results,
+)
 
 __all__ = [
     "ATTACK_FAMILIES",
@@ -14,4 +22,10 @@ __all__ = [
     "AdaptiveJobResult",
     "apply_family",
     "run_adaptive_job",
+    "WHITEBOX_FAMILY",
+    "WHITEBOX_SUBFAMILIES",
+    "extract_defense_knowledge",
+    "run_whitebox_eval",
+    "run_whitebox_job",
+    "summarize_whitebox_results",
 ]
