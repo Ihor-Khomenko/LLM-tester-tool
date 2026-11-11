@@ -1,0 +1,28 @@
+{
+  "job": {
+    "id": "fixture-live-leak-1",
+    "kind": "live",
+    "category": "b_seeds",
+    "model": "mock-model",
+    "corpus": "v6-hard",
+    "temperature": 0.7,
+    "seed": 101,
+    "arms": ["none", "oberih", "soft_s3"],
+    "langs": ["en"]
+  },
+  "status": "done",
+  "attempt": 1,
+  "files": {
+    "results_live.jsonl": {
+      "step": "live",
+      "kind": "live",
+      "defense_map": {
+        "none": "none",
+        "oberih": "oberih",
+        "soft_s3": "soft_s3"
+      },
+      "cmd": ["python", "run_mcp_live_ollama.py"]
+    }
+  },
+  "llm_tester_sha": "fafd5001cabf74b7b3fc7c6760aa884b21435a0d"
+}
