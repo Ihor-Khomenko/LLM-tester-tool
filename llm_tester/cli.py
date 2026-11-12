@@ -1,7 +1,8 @@
 """Console entry point: ``llmtest run``, ``report``, ``datasets``, ``guard-eval``,
-``baselines-eval``, ``agentdojo``, ``ablation``, ``guard-calibrate``,
-``grey-zone-rebuild``, ``import-mcp-sim``, ``adaptive-attack``,
-``mcp-scenario-eval``, ``agent-bench``, ``index``, ``compare``, ``figures``.
+``baselines-eval``, ``detector-eval``, ``agentdojo``, ``ablation``,
+``guard-calibrate``, ``grey-zone-rebuild``, ``import-mcp-sim``,
+``adaptive-attack``, ``mcp-scenario-eval``, ``agent-bench``, ``index``,
+``compare``, ``figures``.
 """
 
 from __future__ import annotations
@@ -303,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
         "baselines-eval",
         help=(
             "Evaluate pluggable baselines (spotlighting / prompt_guard2 / "
+            "protectai_deberta / llama_guard3 / qwen3_guard / "
             "progent / task_shield / oberih|sentinel) on the same traces as guard-eval"
         ),
     )
@@ -312,6 +314,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[
             "spotlighting",
             "prompt_guard2",
+            "protectai_deberta",
+            "llama_guard3",
+            "qwen3_guard",
             "progent",
             "task_shield",
             "oberih",
@@ -346,8 +351,62 @@ def build_parser() -> argparse.ArgumentParser:
         "--prompt-guard-threshold",
         type=float,
         default=0.5,
-        help="Injection score threshold for PromptGuard 2",
+        help="Injection score threshold for PromptGuard 2 / detector arms",
     )
+    be.add_argument(
+        "--detector-model",
+        default=None,
+        help="HF id or local path override for protectai_deberta / llama_guard3 / qwen3_guard",
+    )
+    be.add_argument(
+        "--detector-threshold",
+        type=float,
+        default=None,
+        help="Score threshold for detector arms (default: --prompt-guard-threshold)",
+    )
+
+    de = sub.add_parser(
+        "detector-eval",
+        help=(
+            "Detector-only TPR/FPR eval (Wilson CIs) over Oberih tiers + "
+            "prompt_guard2 / protectai_deberta / llama_guard3 / qwen3_guard. "
+            "Benign FP on third-party corpora is the key readout. "
+            "Use --corpus synthetic in CI (no downloads)."
+        ),
+    )
+    de.add_argument(
+        "--corpus",
+        default="synthetic",
+        choices=[
+            "synthetic",
+            "injecagent",
+            "bipia",
+            "deepset_prompt_injections",
+            "deepset",
+            "promptinject",
+        ],
+        help="Detector corpus (prefetch non-synthetic via scripts/fetch_external_datasets.py)",
+    )
+    de.add_argument(
+        "--arms",
+        default=(
+            "oberih_s1,oberih_s1s2,oberih,prompt_guard2,"
+            "protectai_deberta,llama_guard3,qwen3_guard"
+        ),
+        help="Comma-separated arms (Oberih tiers + detector baselines)",
+    )
+    de.add_argument("--limit", type=int, default=None)
+    de.add_argument("--threshold", type=float, default=0.5)
+    de.add_argument("--language", default="en", help="Language tag for reporting")
+    de.add_argument("--split", default="test")
+    de.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        help="External corpus cache (default .cache/llm_tester/external)",
+    )
+    de.add_argument("--json", action="store_true")
+    add_run_dir_args(de, default_name_help="detector-eval_<corpus>")
     be.add_argument(
         "--provider",
         default=None,
@@ -398,6 +457,9 @@ def build_parser() -> argparse.ArgumentParser:
             "sentinel",
             "spotlighting",
             "prompt_guard2",
+            "protectai_deberta",
+            "llama_guard3",
+            "qwen3_guard",
             "progent",
             "task_shield",
             "spotlighting_with_delimiting",
@@ -405,7 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
             "tool_filter",
             "transformers_pi_detector",
         ],
-        help="Defense plugged into the suite (Oberih, PromptGuard 2, or AgentDojo native)",
+        help="Defense plugged into the suite (Oberih, detectors, or AgentDojo native)",
     )
     adj.add_argument(
         "--real",
@@ -2138,6 +2200,8 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
         spotlight_mode=args.spotlight_mode,
         prompt_guard_model=args.prompt_guard_model,
         prompt_guard_threshold=args.prompt_guard_threshold,
+        detector_model=getattr(args, "detector_model", None),
+        detector_threshold=getattr(args, "detector_threshold", None),
         sentinel_kwargs=sentinel_kwargs or None,
     )
     if getattr(guard, "skip_reason", None) and not getattr(guard, "available", True):
@@ -2206,6 +2270,78 @@ def cmd_baselines_eval(args: argparse.Namespace) -> int:
     # Non-zero exit when every case errored (silent-ALLOW regression).
     if metrics.n and metrics.n_errors >= metrics.n:
         return 3
+    return 0
+
+
+def cmd_detector_eval(args: argparse.Namespace) -> int:
+    """Offline detector-only TPR/FPR with Wilson CIs (benign FP benchmark)."""
+    from llm_tester.agent.detector_eval import (
+        evaluate_detector_items,
+        format_detector_report,
+        summarize_results,
+    )
+    from llm_tester.agent.external_datasets import resolve_detector_corpus
+
+    arms = [a.strip() for a in str(args.arms).split(",") if a.strip()]
+    try:
+        items = resolve_detector_corpus(
+            args.corpus,
+            cache_dir=args.cache_dir,
+            split=args.split,
+            limit=args.limit,
+            language=args.language,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Failed to load corpus: {exc}", file=sys.stderr)
+        return 1
+
+    if not items:
+        print("No detector items loaded.", file=sys.stderr)
+        return 1
+
+    results = evaluate_detector_items(
+        items, arms, threshold=float(args.threshold)
+    )
+    summary = summarize_results(results)
+    summary["command"] = "detector-eval"
+    summary["corpus"] = args.corpus
+    summary["language"] = args.language
+    summary["threshold"] = float(args.threshold)
+    summary["n_items"] = len(items)
+
+    run_dir = prepare_run_dir(
+        args,
+        "detector-eval",
+        name_parts=["detector-eval", args.corpus],
+    )
+    (run_dir / "metrics.json").write_text(
+        json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+    )
+    with open_results_writer(run_dir, append=False) as writer:
+        for row in summary.get("arms") or []:
+            writer.write(row)
+    finalize_run_dir(
+        run_dir,
+        command="detector-eval",
+        config={
+            "command": "detector-eval",
+            "corpus": args.corpus,
+            "arms": arms,
+            "threshold": float(args.threshold),
+            "language": args.language,
+            "limit": args.limit,
+            "split": args.split,
+        },
+        metrics=summary,
+    )
+
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(format_detector_report(summary))
     return 0
 
 
@@ -2890,6 +3026,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return cmd_guard_eval(args)
     if args.command == "baselines-eval":
         return cmd_baselines_eval(args)
+    if args.command == "detector-eval":
+        return cmd_detector_eval(args)
     if args.command == "agentdojo":
         return cmd_agentdojo(args)
     if args.command == "ablation":

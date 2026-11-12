@@ -62,6 +62,10 @@ def est_minutes(j):
     if j["kind"] == "agentdojo":
         # One suite × arms × attacks; keep each job under ~2 h.
         return int(pol.get("agentdojo_min_per_suite", {}).get(j.get("suite", "workspace"), 90))
+    if j["kind"] == "detector":
+        # Text classification only; ETA scales with arms × optional limit.
+        base = int((pol.get("planner") or {}).get("i_detector", {}).get("est_min", 25))
+        return max(5, base * max(1, len(j.get("arms") or [])) // 7)
     if j["kind"] == "mock" or j.get("llm") == "mock":
         return 5
     if j["kind"] == "real_mcp":
@@ -293,7 +297,48 @@ def gen_c_wb(existing, pol, cells):
         },
     )
 
-GEN = {"b_seeds": gen_b, "d_variants": gen_d, "c_adaptive": gen_c, "e_benign": gen_e, "f_real_mcp": gen_f, "g_agentdojo": gen_g}
+def gen_i(existing, pol, cells):
+    """Detector-only TPR/FPR jobs over external corpora (benign FP benchmark)."""
+    cfg = pol["planner"].get("i_detector") or {}
+    corpora = list(cfg.get("corpora") or ["synthetic", "bipia", "deepset_prompt_injections", "injecagent"])
+    arms = list(cfg.get("arms") or [
+        "oberih_s1", "oberih_s1s2", "oberih",
+        "prompt_guard2", "protectai_deberta", "llama_guard3", "qwen3_guard",
+    ])
+    seeds = list(cfg.get("seeds") or [42])
+    langs = list(cfg.get("langs") or ["en"])
+    cands = []
+    for i, corpus in enumerate(corpora):
+        for s in seeds:
+            # Job ids stay short and stable: i-det-<corpus>-s<seed>
+            slug = safe(corpus.replace("_prompt_injections", "").replace("_", ""))[:24]
+            jid = f"i-det-{slug}-s{s}"
+            if jid in existing:
+                continue
+            cands.append((i, s, corpus, jid))
+    if not cands:
+        return None
+    _, seed, corpus, jid = sorted(cands)[0]
+    return job(
+        jid, "i_detector", kind="detector", model="detector", corpus=corpus,
+        temperature=0.0, seed=seed, arms=arms, langs=langs,
+        labels=["attack", "benign"], n_variants=0,
+        threshold=cfg.get("threshold", 0.5),
+        split=cfg.get("split", "test"),
+        limit=cfg.get("limit"),
+        timeout_s=cfg.get("timeout_s", 7200),
+    )
+
+
+GEN = {
+    "b_seeds": gen_b,
+    "d_variants": gen_d,
+    "c_adaptive": gen_c,
+    "e_benign": gen_e,
+    "f_real_mcp": gen_f,
+    "g_agentdojo": gen_g,
+    "i_detector": gen_i,
+}
 
 _PREFIX = {
     "b_seeds": "b-",
@@ -302,6 +347,7 @@ _PREFIX = {
     "e_benign": "e-",
     "f_real_mcp": "f-",
     "g_agentdojo": "g-",
+    "i_detector": "i-",
 }
 
 def next_job(existing, pol, cells):

@@ -60,6 +60,7 @@ def research_runner(tmp_path, monkeypatch):
             "prereg_stats",
             "outcomes",
             "prompt_guard_gate",
+            "detector_gates",
         ) or name.startswith(
             ("common.", "planner.", "supervisor.", "analyzer.", "prereg_stats.", "outcomes.")
         ):

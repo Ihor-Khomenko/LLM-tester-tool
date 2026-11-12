@@ -123,36 +123,52 @@ def _defense_label(dn):
         return "oberih_graded"
     return dn
 
+def _skip_shim(stage: str):
+    """Allow-all shim when an optional detector arm cannot be constructed."""
+    class _Skip:
+        def set_user_task(self, *_a, **_k): pass
+        def reset_session(self, **_k): pass
+        def check_tool_registration(self, tools):
+            from llm_tester.baselines.protocol import allow_decision
+            from llm_tester.sentinel.types import Checkpoint
+            return allow_decision(checkpoint=Checkpoint.T0.value, stage=stage,
+                                  reasons=[f"{stage}:skipped"], meta={"available": False})
+        def on_tool_output(self, source, content, **_k):
+            from llm_tester.baselines.protocol import allow_decision
+            from llm_tester.sentinel.types import Checkpoint
+            return allow_decision(checkpoint=Checkpoint.T1.value, stage=stage,
+                                  reasons=[f"{stage}:skipped"], meta={"available": False})
+        def check_tool_call(self, call, **_k):
+            from llm_tester.baselines.protocol import allow_decision
+            from llm_tester.sentinel.types import Checkpoint
+            return allow_decision(checkpoint=Checkpoint.T2.value, stage=stage,
+                                  reasons=[f"{stage}:skipped"], meta={"available": False})
+    return _Skip()
+
+
 def _make_guard(dn):
-    """Build guard for one defense arm. prompt_guard2 is optional (skip if missing)."""
+    """Build guard for one defense arm. External detectors skip if missing."""
     if dn in ("none", "off", "allow"):
         return None
     low = dn.lower().replace("-", "_")
-    if low in ("prompt_guard2", "prompt_guard", "promptguard2", "promptguard", "pg2"):
-        try:
-            import prompt_guard_gate as PGG
-            return PGG.build_prompt_guard2(threshold=0.5)
-        except Exception as e:
-            print(f"WARN prompt_guard2 unavailable ({e!r}); using allow-all skip shim", flush=True)
-            class _Skip:
-                def set_user_task(self, *_a, **_k): pass
-                def reset_session(self, **_k): pass
-                def check_tool_registration(self, tools):
-                    from llm_tester.baselines.protocol import allow_decision
-                    from llm_tester.sentinel.types import Checkpoint
-                    return allow_decision(checkpoint=Checkpoint.T0.value, stage="prompt_guard2",
-                                          reasons=["prompt_guard2:skipped"], meta={"available": False})
-                def on_tool_output(self, source, content, **_k):
-                    from llm_tester.baselines.protocol import allow_decision
-                    from llm_tester.sentinel.types import Checkpoint
-                    return allow_decision(checkpoint=Checkpoint.T1.value, stage="prompt_guard2",
-                                          reasons=["prompt_guard2:skipped"], meta={"available": False})
-                def check_tool_call(self, call, **_k):
-                    from llm_tester.baselines.protocol import allow_decision
-                    from llm_tester.sentinel.types import Checkpoint
-                    return allow_decision(checkpoint=Checkpoint.T2.value, stage="prompt_guard2",
-                                          reasons=["prompt_guard2:skipped"], meta={"available": False})
-            return _Skip()
+    try:
+        import detector_gates as DG
+        if DG.is_external_detector_arm(low):
+            canon = DG.canonical_detector_arm(low) or low
+            try:
+                return DG.build_detector_guard(canon, threshold=0.5)
+            except Exception as e:
+                print(f"WARN {canon} unavailable ({e!r}); using allow-all skip shim", flush=True)
+                return _skip_shim(canon)
+    except Exception:
+        # Fallback: PromptGuard-only path (older checkouts / import issues).
+        if low in ("prompt_guard2", "prompt_guard", "promptguard2", "promptguard", "pg2"):
+            try:
+                import prompt_guard_gate as PGG
+                return PGG.build_prompt_guard2(threshold=0.5)
+            except Exception as e:
+                print(f"WARN prompt_guard2 unavailable ({e!r}); using allow-all skip shim", flush=True)
+                return _skip_shim("prompt_guard2")
     if low in ("oberih_graded", "sentinel_graded", "graded"):
         return _build_defense("oberih_graded", config=cfg, policy=policy)
     return _build_defense(dn, config=cfg, policy=policy)

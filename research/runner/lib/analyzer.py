@@ -365,13 +365,16 @@ def main():
                 f"{c.get('q_ben', 0)} | {dfp_s} | {fmt(c['util'], c['n_ben'])} | "
                 f"{c['n_att']} | {fmt(c['inj'], c['n_att'])} | {dinj_s} |"
             )
-    # PromptGuard 2 baseline table
-    pg_cells = [(k, c) for k, c in sorted(cells.items()) if _parts(k)[3] == "prompt_guard2"]
-    if pg_cells:
-        L += ["", "## PromptGuard 2 baseline (prompt_guard2 arm)", "",
+    # External detector baseline tables (PromptGuard 2 + ProtectAI / Llama Guard / Qwen3Guard)
+    _EXT_ARMS = ("prompt_guard2", "protectai_deberta", "llama_guard3", "qwen3_guard")
+    for ext_arm in _EXT_ARMS:
+        ext_cells = [(k, c) for k, c in sorted(cells.items()) if _parts(k)[3] == ext_arm]
+        if not ext_cells:
+            continue
+        L += ["", f"## External detector baseline (`{ext_arm}` arm)", "",
               "| model | corpus | T | series | nvar | n att | inj ASR | blocks on att | benign n | FP (hard) | attempted | outcomes |",
               "|---|---|---|---|---|---|---|---|---|---|---|---|"]
-        for key, c in pg_cells:
+        for key, c in ext_cells:
             m, corp, T, _arm, series, nvar = _parts(key)
             oc = ", ".join(f"{o} {n}" for o, n in sorted(c.get("outcomes", {}).items())) or "—"
             L.append(

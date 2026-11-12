@@ -23,7 +23,7 @@ ap.add_argument("--llm", default="ollama", help="ollama|requesty|openai_compat|m
 ap.add_argument("--base-url", default=None)
 ap.add_argument(
     "--arms",
-    default="none,oberih,oberih_graded,spotlighting_with_delimiting,repeat_user_prompt,tool_filter,transformers_pi_detector,prompt_guard2",
+    default="none,oberih,oberih_graded,spotlighting_with_delimiting,repeat_user_prompt,tool_filter,transformers_pi_detector,prompt_guard2,protectai_deberta,llama_guard3,qwen3_guard",
 )
 ap.add_argument(
     "--attacks",

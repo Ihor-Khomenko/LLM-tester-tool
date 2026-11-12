@@ -23,6 +23,9 @@ The research workspace is the directory that contains `runner/` and `real_mcp/` 
 | `REAL_MCP_ROOT` / `REAL_MCP_NODE` | `$RESEARCH_ROOT/real_mcp` / `node` on PATH | Real-MCP track |
 | `OBERIH_LAUNCHD_LABEL` | `org.oberih.runner` | macOS LaunchAgent label (overridable) |
 | `PROMPT_GUARD_MODEL_PATH` | HF id / local dir | Offline weights for the `prompt_guard2` arm |
+| `PROTECTAI_DEBERTA_MODEL_PATH` / `LLAMA_GUARD_MODEL_PATH` / `QWEN3_GUARD_MODEL_PATH` | HF id / local dir | Optional local overrides for new detector arms |
+| `OBERIH_DETECTOR_DEVICE` | `cpu` / `mps` | Force detector device (default: MPS if available else CPU) |
+| `HF_TOKEN` | read-only token | Required for gated `llama_guard3` weights |
 
 `policy.yaml` keeps frozen-checkout names (`LLM-tester-tool-fafd500`, `venv-fafd500`) as defaults for an external research workspace; override with env when developing inside this repo. No API keys belong in the repo or in policy.
 
@@ -34,6 +37,12 @@ The research workspace is the directory that contains `runner/` and `real_mcp/` 
 | `oberih_graded` | Graded response (`response_mode: graded`); quarantine ≠ FP |
 | `soft_s3` / `s1` / `s1s2` / `noT0` | Explicit A/B policy variants |
 | `prompt_guard2` | Meta Llama-Prompt-Guard-2-22M baseline (optional dep; skips if missing) |
+| `protectai_deberta` / `llama_guard3` / `qwen3_guard` | Additional HF detectors (same T1/T2 hooks; skip if missing) |
+
+**Detector-only jobs** (`kind: detector`, planner `i_detector`, ids `i-det-*`):
+text classification TPR/FPR on synthetic / BIPIA / deepset / InjecAgent — no
+Ollama agent loop. Prefetch: `python scripts/fetch_external_datasets.py`.
+See `docs/detector-eval.md`.
 
 Jobs whose ETA exceeds `max_job_min` (default 120) are split by arms into `-p2` / `-p3` parts (pairing preserved). Each supervisor retry gets a full fresh `timeout_s` budget.
 
