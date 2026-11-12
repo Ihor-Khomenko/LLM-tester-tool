@@ -135,7 +135,11 @@ def build_detector_arm(
 
 
 def item_to_minimal_trace(item: DetectorItem) -> TraceStep:
-    """Wrap a DetectorItem as a one-output trace (for Oberih cascade replay)."""
+    """Wrap a DetectorItem as a one-output trace (for Oberih cascade replay).
+
+    Uses :func:`deepset_to_traces` so attack/benign framing is label-independent
+    (same user_request, untrusted tool output, candidate call; only text differs).
+    """
     return deepset_to_traces([item])[0]
 
 
@@ -159,7 +163,15 @@ def _score_with_text_guard(guard: Any, text: str) -> Tuple[bool, float, float]:
     )
 
 
-def _score_with_oberih(guard: Any, item: DetectorItem) -> Tuple[bool, float, float]:
+def _score_with_oberih(
+    guard: Any, item: DetectorItem
+) -> Tuple[bool, float, float, Dict[str, Any]]:
+    """Return (flagged, risk, latency_ms, record).
+
+    ``flagged`` is any-intervention (``intervened`` or ``blocked``) on the
+    label-independent minimal trace. The record exposes ``first_detection`` /
+    ``reasons`` / ``checkpoint`` so callers can see which stage fired.
+    """
     from llm_tester.agent.eval import evaluate_traces
 
     traces = [item_to_minimal_trace(item)]
@@ -168,7 +180,7 @@ def _score_with_oberih(guard: Any, item: DetectorItem) -> Tuple[bool, float, flo
     flagged = bool(rec.get("intervened") or rec.get("blocked"))
     lat = float((metrics.latencies_ms or [0.0])[0] if metrics.latencies_ms else 0.0)
     risk = float(rec.get("risk_score") or 0.0)
-    return flagged, risk, lat
+    return flagged, risk, lat, rec
 
 
 def evaluate_detector_items(
@@ -232,7 +244,12 @@ def evaluate_detector_items(
                 continue
 
             if is_oberih:
-                flagged, _score, lat = _score_with_oberih(guard, it)
+                flagged, _score, lat, rec = _score_with_oberih(guard, it)
+                # Track which checkpoint/reasons first triggered (debug / report).
+                if flagged:
+                    trig = ar.meta.setdefault("trigger_checkpoints", {})
+                    cp = str(rec.get("first_detection") or rec.get("checkpoint") or "?")
+                    trig[cp] = int(trig.get(cp) or 0) + 1
             else:
                 if hasattr(guard, "reset_session"):
                     guard.reset_session(keep_registry=False)

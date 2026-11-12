@@ -54,6 +54,18 @@ llmtest detector-eval --corpus injecagent --limit 100 \
 Reports per arm × dataset × language: TPR/FPR with Wilson 95% CIs (gated when
 `n < 5`) and mean latency. `benign_fp_benchmark` highlights third-party FPR.
 
+### Oberih framing (label-independent)
+
+Oberih tiers replay each `DetectorItem` as a minimal tool-output trace. Attack and
+benign items share the same `user_request`, `untrusted=True` tool output, and
+candidate `docs.read` call — **only the text (and gold label) differ**. Do not
+restore sink-on-attack / trusted-on-benign framing; that made Oberih TPR/FPR an
+artifact of the label (see PR fixing runs at `llm_tester_sha` `0fc88d2`).
+
+InjecAgent benign twins replace the paper's `<Attacker Instruction>` placeholder
+with neutral filler; leaving the placeholder made text detectors (e.g. ProtectAI
+DeBERTa) flag every twin.
+
 ## Research runner
 
 - Live arms: supervisor routes external detectors like `prompt_guard2`.
