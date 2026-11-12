@@ -1,0 +1,43 @@
+{
+  "job": {
+    "id": "i-det-synthetic-s42",
+    "kind": "detector",
+    "model": "detector",
+    "corpus": "synthetic",
+    "arms": [
+      "oberih_s1",
+      "oberih",
+      "prompt_guard2",
+      "protectai_deberta",
+      "llama_guard3",
+      "qwen3_guard"
+    ],
+    "langs": [
+      "en"
+    ],
+    "seed": 42,
+    "temperature": 0.0,
+    "limit": 4
+  },
+  "status": "done",
+  "attempt": 1,
+  "llm_tester_sha": "0fc88d2deadbeef",
+  "files": {
+    "results_detector.jsonl": {
+      "step": "detector",
+      "kind": "detector",
+      "defense_map": {
+        "oberih_s1": "oberih_s1",
+        "oberih": "oberih",
+        "prompt_guard2": "prompt_guard2",
+        "protectai_deberta": "protectai_deberta",
+        "llama_guard3": "llama_guard3",
+        "qwen3_guard": "qwen3_guard"
+      },
+      "cmd": [
+        "python",
+        "run_detector_eval.py"
+      ]
+    }
+  }
+}

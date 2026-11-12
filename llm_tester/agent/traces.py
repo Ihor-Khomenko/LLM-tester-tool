@@ -452,7 +452,9 @@ def injecagent_case_to_trace(case: Dict[str, Any], idx: int, split: str) -> Trac
     return TraceStep(
         id=f"injec-{split}-{idx:04d}",
         user_request=user,
-        tool_outputs=[{"source": user_tool, "content": tool_response}],
+        tool_outputs=[
+            {"source": user_tool, "content": tool_response, "untrusted": True}
+        ],
         call=attack_call,
         label="attack",
         attack_type="indirect_injection",
@@ -468,6 +470,28 @@ def injecagent_case_to_trace(case: Dict[str, Any], idx: int, split: str) -> Trac
     )
 
 
+# InjecAgent paper: Tool Response Template embeds an "<Attacker Instruction>"
+# placeholder in an attacker-modifiable field; the attack Tool Response replaces
+# it with the real instruction. Benign twins must substitute neutral content —
+# leaving the placeholder makes every twin look like an injection to text
+# detectors (e.g. ProtectAI DeBERTa 510/510 FP on dh_base).
+_INJECAGENT_ATTACKER_PLACEHOLDERS = (
+    "<Attacker Instruction>",
+    "<attacker instruction>",
+    "<ATTACKER INSTRUCTION>",
+)
+_INJECAGENT_BENIGN_FILLER = "No additional comments."
+
+
+def _injecagent_benign_tool_content(template: str) -> str:
+    text = template
+    if text.strip() == " ":
+        return text.replace(" ", "status ok")
+    for ph in _INJECAGENT_ATTACKER_PLACEHOLDERS:
+        text = text.replace(ph, _INJECAGENT_BENIGN_FILLER)
+    return text
+
+
 def injecagent_benign_twin(case: Dict[str, Any], idx: int, split: str) -> TraceStep:
     user = str(case.get("User Instruction") or "")
     user_tool = str(case.get("User Tool") or "user_tool")
@@ -479,9 +503,10 @@ def injecagent_benign_twin(case: Dict[str, Any], idx: int, split: str) -> TraceS
         tool_outputs=[
             {
                 "source": user_tool,
-                "content": template.replace(" ", "status ok")
-                if template.strip() == " "
-                else template,
+                "content": _injecagent_benign_tool_content(template),
+                # Third-party retrieved content is untrusted for both classes;
+                # detector-only replay also forces untrusted via deepset_to_traces.
+                "untrusted": True,
             }
         ],
         call=ToolCall(name=user_tool, arguments=params),
@@ -493,6 +518,7 @@ def injecagent_benign_twin(case: Dict[str, Any], idx: int, split: str) -> TraceS
             "source": "injecagent",
             "license": "MIT",
             "version": INJECAGENT_COMMIT,
+            "benign_placeholder_replaced": True,
         },
     )
 
