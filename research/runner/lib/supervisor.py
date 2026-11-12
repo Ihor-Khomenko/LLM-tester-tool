@@ -126,8 +126,38 @@ def steps_for(job, pol, outdir):
             cmd += ["--base-url", str(job["base_url"])]
         S.append(("agentdojo", out, cmd, {a: a for a in arms}, "agentdojo"))
         return S
+    if job["kind"] == "detector":
+        # Offline text classification (TPR/FPR); no Ollama agent loop.
+        out = outdir / "results_detector.jsonl"
+        arms = list(job.get("arms") or [
+            "oberih_s1", "oberih_s1s2", "oberih",
+            "prompt_guard2", "protectai_deberta", "llama_guard3", "qwen3_guard",
+        ])
+        corpus = job.get("corpus") or job.get("detector_corpus") or "synthetic"
+        cmd = [PY, str(L / "run_detector_eval.py"),
+               "--corpus", corpus,
+               "--arms", ",".join(arms),
+               "--langs", langs,
+               "--threshold", str(job.get("threshold", 0.5)),
+               "--split", str(job.get("split", "test")),
+               "--run-tag", job["id"], "--out", str(out)]
+        if job.get("limit") is not None:
+            cmd += ["--limit", str(job["limit"])]
+        if job.get("cache_dir"):
+            cmd += ["--cache-dir", str(job["cache_dir"])]
+        S.append(("detector", out, cmd, {a: a for a in arms}, "detector"))
+        return S
     # External baseline arms (not Oberih policy variants): pass defense name through.
-    EXTERNAL = {"prompt_guard2", "prompt_guard", "pg2"}
+    try:
+        from detector_gates import canonical_detector_arm, is_external_detector_arm
+    except Exception:
+        def is_external_detector_arm(n):  # type: ignore
+            return (n or "").lower().replace("-", "_") in {
+                "prompt_guard2", "prompt_guard", "pg2",
+            }
+        def canonical_detector_arm(n):  # type: ignore
+            x = (n or "").lower().replace("-", "_")
+            return "prompt_guard2" if x in ("prompt_guard2", "prompt_guard", "pg2") else None
     # Graded Oberih: dedicated defense id so response_mode=graded is set in _build_defense.
     GRADED = {"oberih_graded", "sentinel_graded", "graded"}
     base = [a for a in job["arms"] if a in ("none", "oberih")]
@@ -136,9 +166,9 @@ def steps_for(job, pol, outdir):
     for a in job["arms"]:
         if a in ("none", "oberih"): continue
         al = a.lower().replace("-", "_")
-        if al in EXTERNAL or a in EXTERNAL:
-            dname = "prompt_guard2"
-            groups.append((dname, dname, {dname: "prompt_guard2"}, {}))
+        if is_external_detector_arm(al) or is_external_detector_arm(a):
+            dname = canonical_detector_arm(a) or canonical_detector_arm(al) or al
+            groups.append((dname, dname, {dname: dname}, {}))
             continue
         if al in GRADED or a in GRADED:
             groups.append(("oberih_graded", "oberih_graded", {"oberih_graded": "oberih_graded"}, {}))

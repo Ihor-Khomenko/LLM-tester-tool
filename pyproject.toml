@@ -70,7 +70,13 @@ llmtest = "llm_tester.cli:main"
 include = ["llm_tester*"]
 
 [tool.setuptools.package-data]
-llm_tester = ["data/sentinel/*", "data/agent/*", "baselines/README.md", "data/agent/adaptive_s2_traces.jsonl"]
+llm_tester = [
+    "data/sentinel/*",
+    "data/agent/*",
+    "data/external_datasets/*",
+    "baselines/README.md",
+    "data/agent/adaptive_s2_traces.jsonl",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -60,6 +60,9 @@ DEFAULT_ARMS = (
     "oberih_graded",
     *AGENTDOJO_NATIVE_DEFENSES,
     "prompt_guard2",
+    "protectai_deberta",
+    "llama_guard3",
+    "qwen3_guard",
 )
 
 # Lightweight EN→UK glossary for injection *text* only (optional).

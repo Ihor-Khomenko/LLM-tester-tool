@@ -6,7 +6,7 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest oberih-proxy` (alias `sentinel-proxy`), `llmtest index`, `llmtest compare`, `llmtest figures`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest baselines-eval`, `llmtest detector-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest oberih-proxy` (alias `sentinel-proxy`), `llmtest index`, `llmtest compare`, `llmtest figures`
 - **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
 - **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
@@ -16,7 +16,9 @@ For research purposes only. Use responsibly.
   - [AdvBench](https://huggingface.co/datasets/walledai/AdvBench) (`harmful_behaviors`)
   - [HarmBench](https://huggingface.co/datasets/walledai/HarmBench) (standard)
   - [JailbreakBench JBB-Behaviors](https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors)
-  - [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections) (prompt-injection set)
+  - [deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections) (prompt-injection set; Apache-2.0)
+  - [InjecAgent](https://github.com/uiuc-kang-lab/InjecAgent) / [BIPIA](https://github.com/microsoft/BIPIA) via fetch script (not vendored; checksum-pinned)
+- Comparison detector arms: `prompt_guard2`, `protectai_deberta`, `llama_guard3`, `qwen3_guard` (optional `[detectors]`; CPU/MPS; skip offline)
 - Guards: `none` or `llmguard`
 - Judges: phrase matching (default), optional Llama Guard or LLM-as-judge
 - **Оберіг (Oberih)** — cascaded provenance-aware guard for agentic / MCP tool use (formerly MCP-Sentinel; see below)
@@ -226,13 +228,35 @@ llmtest guard-eval --dataset synthetic --no-s1 --no-s3 --run-dir runs/ablation_n
 llmtest guard-eval --dataset synthetic \
   --extra-sha mcp-security-research=$(git -C ../mcp-security-research rev-parse HEAD)
 
-# InjecAgent (verified downloadable from GitHub raw; 510 dh_base cases)
+# InjecAgent (pinned commit + SHA256; prefer fetch script)
 llmtest guard-eval --dataset injecagent --download-injecagent --limit 100
 
 # External JSONL — native v1 *or* mcp-security-research export schema 1.0
 llmtest guard-eval --dataset jsonl --dataset-path scenarios.jsonl
 llmtest guard-eval --dataset jsonl \
   --dataset-path llm_tester/data/agent/msr_schema10_examples.jsonl
+
+# --- Detector baselines + third-party benign FP benchmark ---
+# Optional weights: pip install 'llm-tester[detectors]'  (see llm_tester/baselines/README.md)
+# Prefetch corpora (checksum-verified; never run in CI):
+python scripts/fetch_external_datasets.py                  # injecagent + bipia
+python scripts/fetch_external_datasets.py --deepset        # deepset/prompt-injections via HF
+
+# Detector-only TPR/FPR with Wilson CIs (Oberih S1/S1+S2/full + detectors).
+# Key readout: benign-lookalike FPR on BIPIA contexts / deepset benign / InjecAgent twins.
+llmtest detector-eval --corpus synthetic --limit 20        # CI-safe
+llmtest detector-eval --corpus bipia --limit 200
+llmtest detector-eval --corpus deepset_prompt_injections --limit 200
+llmtest detector-eval --corpus injecagent --limit 100
+
+# Same arms on agent traces (baselines-eval)
+llmtest baselines-eval --baseline protectai_deberta --dataset synthetic
+llmtest baselines-eval --baseline llama_guard3 --dataset synthetic
+llmtest baselines-eval --baseline qwen3_guard --dataset synthetic
+
+# Research runner: enqueue detector-only jobs (kind=detector, ids i-det-*)
+# research/runner/bin/ctl.sh enqueue '{"id":"i-det-bipia-s42","kind":"detector","corpus":"bipia","arms":["oberih","prompt_guard2","protectai_deberta","llama_guard3","qwen3_guard"],"langs":["en"]}'
+# Docs: docs/detector-eval.md
 
 # Explicit importer: MSR sim export → v1 with T0/T1/T2 checkpoint metadata
 llmtest import-mcp-sim \

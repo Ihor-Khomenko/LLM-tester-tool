@@ -49,16 +49,23 @@ ATTACK_TYPES = frozenset(
     }
 )
 
-# Official InjecAgent test-case JSON (verified downloadable from GitHub raw).
+# Official InjecAgent test-case JSON (pinned commit + SHA256 in
+# llm_tester/data/external_datasets/manifest.yaml; prefer
+# scripts/fetch_external_datasets.py for verified fetches).
+INJECAGENT_COMMIT = "f19c9f2c79a41046eb13c03c51a24c567a8ffa07"
 INJECAGENT_URLS = {
     "dh_base": (
-        "https://raw.githubusercontent.com/uiuc-kang-lab/InjecAgent/"
-        "main/data/test_cases_dh_base.json"
+        f"https://raw.githubusercontent.com/uiuc-kang-lab/InjecAgent/"
+        f"{INJECAGENT_COMMIT}/data/test_cases_dh_base.json"
     ),
     "ds_base": (
-        "https://raw.githubusercontent.com/uiuc-kang-lab/InjecAgent/"
-        "main/data/test_cases_ds_base.json"
+        f"https://raw.githubusercontent.com/uiuc-kang-lab/InjecAgent/"
+        f"{INJECAGENT_COMMIT}/data/test_cases_ds_base.json"
     ),
+}
+INJECAGENT_SHA256 = {
+    "dh_base": "0a8186468d21389af432e8c7b399ae42264d1b93a07b65c7a489468508604305",
+    "ds_base": "4daab35c62a3845e8b9400f4dca58b9c9f37e57cd33b2337552557fbb26282e9",
 }
 
 PACKAGE_DATA = Path(__file__).resolve().parent.parent / "data" / "agent"
@@ -455,6 +462,8 @@ def injecagent_case_to_trace(case: Dict[str, Any], idx: int, split: str) -> Trac
             "split": split,
             "user_tool": user_tool,
             "source": "injecagent",
+            "license": "MIT",
+            "version": INJECAGENT_COMMIT,
         },
     )
 
@@ -478,7 +487,13 @@ def injecagent_benign_twin(case: Dict[str, Any], idx: int, split: str) -> TraceS
         call=ToolCall(name=user_tool, arguments=params),
         label="benign",
         attack_type="benign",
-        meta={"split": split, "twin_of": f"injec-{split}-{idx:04d}", "source": "injecagent"},
+        meta={
+            "split": split,
+            "twin_of": f"injec-{split}-{idx:04d}",
+            "source": "injecagent",
+            "license": "MIT",
+            "version": INJECAGENT_COMMIT,
+        },
     )
 
 
@@ -487,7 +502,13 @@ def download_injecagent(
     *,
     splits: Sequence[str] = ("dh_base",),
     timeout: int = 60,
+    verify_sha256: bool = True,
 ) -> Dict[str, Path]:
+    """Download InjecAgent JSON. Prefer ``scripts/fetch_external_datasets.py``
+    for manifest-pinned fetches; this helper remains for ``--download-injecagent``.
+    """
+    import hashlib
+
     dest_dir.mkdir(parents=True, exist_ok=True)
     out: Dict[str, Path] = {}
     for split in splits:
@@ -502,6 +523,14 @@ def download_injecagent(
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read()
+        if verify_sha256 and split in INJECAGENT_SHA256:
+            digest = hashlib.sha256(data).hexdigest()
+            expected = INJECAGENT_SHA256[split]
+            if digest != expected:
+                raise ValueError(
+                    f"InjecAgent {split} checksum mismatch: got {digest}, "
+                    f"expected {expected} (commit {INJECAGENT_COMMIT})"
+                )
         path.write_bytes(data)
         parsed = json.loads(data.decode("utf-8"))
         if not isinstance(parsed, list):

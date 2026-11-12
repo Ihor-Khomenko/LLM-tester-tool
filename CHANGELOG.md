@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Added — Detector baselines + third-party FP corpora
+
+* **Comparison arms** (PromptGuard-style T1/T2, CPU/MPS, lazy `[detectors]` deps;
+  Oberih τ/weights/S3/provenance **unchanged**):
+  * `protectai_deberta` — `protectai/deberta-v3-base-prompt-injection-v2`
+  * `llama_guard3` — `meta-llama/Llama-Guard-3-1B` (gated; clear message if
+    `HF_TOKEN` access denied)
+  * `qwen3_guard` — `Qwen/Qwen3Guard-Gen-0.6B` (Safe/Controversial/Unsafe)
+* **External datasets** (manifest pins + `scripts/fetch_external_datasets.py`
+  with SHA256; not vendored): InjecAgent (MIT), BIPIA (MIT + component
+  licenses; NewsQA/XSum contexts omitted), deepset/prompt-injections
+  (Apache-2.0).
+* **`llmtest detector-eval`** — detector-only TPR/FPR with Wilson CIs per
+  dataset/language; benign-lookalike FP benchmark; Oberih S1 / S1+S2 / full
+  tiers + all detector arms. Runner kind `detector`, planner `i_detector`
+  (`i-det-*` jobs). Docs: `docs/detector-eval.md`.
+* CI remains mock-only (no model/dataset downloads, no paid APIs). Pre-reg
+  confirmatory analysis unchanged by default.
+
 ### Added — AgentDojo full-run + white-box adaptive attack (`a_wb`)
 
 * **AgentDojo full-run:** pin `agentdojo==0.1.35` (benchmark **v1.2.2**); suites

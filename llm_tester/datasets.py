@@ -361,7 +361,12 @@ def load_prompt_injections(
                 dataset="promptinject",
                 type="injection" if label_int == 1 else "benign",
                 category="prompt_injection" if label_int == 1 else "benign",
-                meta={"label": label_int},
+                meta={
+                    "label": label_int,
+                    "source": "https://huggingface.co/datasets/deepset/prompt-injections",
+                    "license": "apache-2.0",
+                    "version": "4f61ecb038e9c3fb77e21034b22511b523772cdd",
+                },
             )
         )
     return prompts
@@ -444,10 +449,22 @@ DATASET_REGISTRY: Dict[str, DatasetInfo] = {
     ),
     "promptinject": DatasetInfo(
         name="promptinject",
-        description="deepset/prompt-injections (label=1 injection prompts)",
+        description=(
+            "deepset/prompt-injections (Apache-2.0; label=1 injection, "
+            "label=0 benign — use injections_only=False for FP eval)"
+        ),
         source="Hugging Face",
         hf_id="deepset/prompt-injections",
-        tags=("prompt-injection",),
+        tags=("prompt-injection", "benign-fp"),
+    ),
+    "bipia": DatasetInfo(
+        name="bipia",
+        description=(
+            "microsoft/BIPIA attack texts + benign contexts "
+            "(MIT + component licenses; fetch via scripts/fetch_external_datasets.py)"
+        ),
+        source="GitHub (pinned; not vendored)",
+        tags=("prompt-injection", "benign-fp", "indirect"),
     ),
 }
 
@@ -457,7 +474,10 @@ DATASET_ALIASES: Dict[str, str] = {
     "jbb-behaviors": "jailbreakbench",
     "prompt-injections": "promptinject",
     "prompt_injections": "promptinject",
+    "deepset": "promptinject",
+    "deepset_prompt_injections": "promptinject",
     "advbench_harmful_behaviors": "advbench",
+    "microsoft-bipia": "bipia",
 }
 
 
@@ -508,7 +528,28 @@ def load_dataset(
     if key == "jailbreakbench":
         return load_jailbreakbench(path)
     if key == "promptinject":
+        # Default stays injections-only for llmtest run back-compat.
+        # Detector FP eval uses external_datasets / detector-eval (both labels).
         return load_prompt_injections(path)
+    if key == "bipia":
+        from llm_tester.agent.external_datasets import (
+            default_external_cache,
+            load_bipia_detector_items,
+        )
+
+        root = Path(path) if path else default_external_cache() / "bipia"
+        items = load_bipia_detector_items(root)
+        return [
+            PromptItem(
+                id=it.id,
+                prompt=it.text,
+                dataset="bipia",
+                type="injection" if it.label == "attack" else "benign",
+                category=str((it.meta or {}).get("category") or it.label),
+                meta=dict(it.meta or {}),
+            )
+            for it in items
+        ]
     raise ValueError(f"No loader for dataset '{key}'")
 
 
