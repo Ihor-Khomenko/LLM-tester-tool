@@ -7,6 +7,7 @@ Extends :mod:`llm_tester.agent.agentdojo_adapter` with:
   * attacks ``important_instructions`` + ``tool_knowledge``
   * resumable plain JSONL keyed by ``run_tag`` with ``code_sha`` per row
   * Wilson CIs on utility / utility-under-attack / targeted ASR
+    (executed-trace) plus attempted-trace ASR for guarded-arm comparability
   * optional Ukrainian translation of **injection texts only**
   * sample-size (``--limit``) and request-budget (``--max-requests``) caps
   * Ollama + OpenAI-compatible router providers (incl. Requesty)
@@ -29,6 +30,7 @@ from llm_tester.agent.agentdojo_adapter import (
     AgentDojoCaseResult,
     AgentDojoSummary,
     _apply_llm_call_counts,
+    _apply_security_scores,
     _build_defense,
     _note_case,
     _register_suite_tools,
@@ -108,7 +110,7 @@ def summarize_with_wilson(summary: AgentDojoSummary) -> Dict[str, Any]:
     m["utility_under_attack_wilson"] = wilson_ci(
         summary.utility_under_attack_successes, summary.n_attack
     )
-    # Targeted ASR = attack successes / attack jobs (AgentDojo security()).
+    # Targeted ASR = executed-trace attack successes / attack jobs.
     m["targeted_asr"] = m.get("asr")
     m["targeted_asr_wilson"] = wilson_ci(
         summary.attack_successes, summary.n_attack
@@ -117,6 +119,13 @@ def summarize_with_wilson(summary: AgentDojoSummary) -> Dict[str, Any]:
     m["targeted_asr_wilson_gated"] = wilson_ci_gated(
         summary.attack_successes, summary.n_attack
     )
+    # Attempted-trace ASR (AgentDojo's original security_from_traces score).
+    m["asr_attempted"] = m.get("asr_attempted")
+    m["targeted_asr_attempted"] = m.get("asr_attempted")
+    m["asr_attempted_wilson"] = wilson_ci(
+        summary.attack_successes_attempted, summary.n_attack
+    )
+    m["targeted_asr_attempted_wilson"] = m["asr_attempted_wilson"]
     return m
 
 
@@ -608,8 +617,12 @@ def run_real_full_suite(
             utility, security = False, False
 
         rec.utility_success = bool(utility)
-        if injection_task is not None:
-            rec.attack_success = bool(security)
+        _apply_security_scores(
+            rec,
+            injection_task=injection_task,
+            security=bool(security),
+            guarded=guarded,
+        )
         rec.blocked = bool(getattr(guarded, "blocked", False)) if guarded else False
         rec.steps = list(getattr(guarded, "steps", []) or []) if guarded else []
         _apply_llm_call_counts(rec, defense=defense, agent_llm=llm)
