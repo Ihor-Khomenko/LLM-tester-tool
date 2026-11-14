@@ -191,6 +191,8 @@ Cascade stages (cheap → expensive):
 
 **Graded action A/B (opt-in):** set `response_mode: graded` in policy, or use defense arm `oberih_graded`. After a cascade BLOCK of a harmless local file write (no canary / tainted secret), emit `Decision.QUARANTINE` (path redirected into `quarantine_dir`) instead of a hard block. Exfil / destructive / secret-bearing calls stay blocked. τ, weights, S3 scale, and provenance are unchanged; quarantine counts are reported separately (`n_quarantined*`) and are not FPs.
 
+**S3 business-lookup A/B (opt-in):** defense arm `oberih_s3biz` / `s3_biz` (`s3_biz_lookup: true`). Softens S3 intent-mismatch false positives on read-only business lookups (`lookup_vendor`, `lookup_approver`, …) whose names/args lack lexical overlap with the user request — lower soft S3 scale for non-side-effect tools, description/synonym intent expansion, and cascade ALLOW when there is no exfil sink. Default τ=0.7, noisy-OR weights, historical S3 scales (0.55 / 0.85), and S2 provenance stay unchanged when the arm is off. Deterministic; no LLM on the default path. See `research/README.md` (Arms) and `docs/mcp-scenario-eval.md`.
+
 ### Library API
 
 ```python

@@ -88,6 +88,94 @@ def _s3_dominant_uncertain(stage_scores: Sequence[StageScore], policy: SentinelP
     return s3.score >= max(s2_score, s1_score)
 
 
+def _reason_hits_exfil_sink(reason: str) -> bool:
+    from llm_tester.sentinel.side_effects import EXFIL_SINK_ARG_MARKERS
+
+    r = (reason or "").lower()
+    if "sensitive_path" in r or "unrequested" in r or "destructive" in r:
+        return True
+    if "side_effect_tool" in r:
+        return True
+    # s2:sensitive_taint:<arg>:… / s2:arg_taint:<arg>:…
+    for marker in EXFIL_SINK_ARG_MARKERS:
+        if f":{marker}:" in r or r.endswith(f":{marker}") or f"_{marker}:" in r:
+            return True
+        # patterns like s2:sensitive_taint:to:0.90
+        parts = r.split(":")
+        if len(parts) >= 3 and parts[2] == marker:
+            return True
+    return False
+
+
+def _tool_name_has_strong_side_effect_verb(tool_name: str) -> bool:
+    """Catch camelCase names like ``AugustSmartLockGrantGuestAccess``."""
+    import re
+
+    from llm_tester.sentinel.side_effects import STRONG_SIDE_EFFECT_VERBS
+
+    raw = tool_name or ""
+    parts = {p for p in re.split(r"[._\-\s/]+", raw.lower()) if p}
+    # CamelCase / PascalCase split.
+    for seg in re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+", raw):
+        if seg:
+            parts.add(seg.lower())
+    strong = {v.lower() for v in STRONG_SIDE_EFFECT_VERBS}
+    return bool(parts & strong)
+
+
+def _s3_biz_readonly_allow(
+    stage_scores: Sequence[StageScore],
+    policy: SentinelPolicy,
+) -> bool:
+    """
+    Opt-in ``s3_biz_lookup``: ALLOW soft-intent FPs on non-side-effect tools
+    when there is no exfil-capable S1/S2 signal.
+
+    Unlike ``soft_s3_allow_without_s4``, this does **not** require S3 dominance —
+    mild S2 taint on opaque business ids (vendor_id, amount on a lookup) plus
+    soft S3 is exactly the false-positive pattern from business-domain corpora.
+    """
+    from llm_tester.sentinel.side_effects import has_exfil_sink_args
+
+    if not bool(getattr(policy, "s3_biz_lookup", False)):
+        return False
+    by = {s.stage: s for s in stage_scores}
+    s3 = by.get("S3")
+    if s3 is None:
+        return False
+    details = s3.details or {}
+    if bool(details.get("critical_mismatch")):
+        return False
+    if bool(details.get("side_effect_tool")):
+        return False
+    s2 = by.get("S2")
+    s2_args = ((s2.details or {}).get("args") if s2 else None) or {}
+    call_args = {
+        k: v
+        for k, v in s2_args.items()
+        if not str(k).startswith("__")
+    }
+    # Prefer concrete arg keys from S2 details; fall back to empty.
+    if has_exfil_sink_args(call_args):
+        return False
+    # Tool name from S2 ``__tool_name__`` detail or S3 verbalization is not
+    # always present; recover from tool_name_taint companion when available.
+    tool_name = ""
+    if s2 is not None:
+        name_detail = (s2.details or {}).get("args", {}).get("__tool_name__") or {}
+        # Fall back: scan reasons are enough when combined with guest_id args.
+        tool_name = str(name_detail.get("raw") or name_detail.get("value") or "")
+    if tool_name and _tool_name_has_strong_side_effect_verb(tool_name):
+        return False
+    for stage in stage_scores:
+        for reason in stage.reasons or []:
+            if stage.stage == "S3":
+                continue
+            if _reason_hits_exfil_sink(reason):
+                return False
+    return True
+
+
 def decide_from_risk(
     risk: float,
     policy: SentinelPolicy,
@@ -135,6 +223,10 @@ def decide_from_risk(
                 (s3.details or {}).get("critical_mismatch")
             ):
                 return Decision.ALLOW
+        # Opt-in ``s3_biz_lookup`` / arm ``oberih_s3biz``: read-only business
+        # lookups with soft intent mismatch (and no exfil sink) ALLOW.
+        if (not policy.enable_s4) and _s3_biz_readonly_allow(stages, policy):
+            return Decision.ALLOW
         if policy.high_risk_action == "ask_user" or policy.ask_user_on_block:
             return Decision.ASK_USER
         return Decision.BLOCK

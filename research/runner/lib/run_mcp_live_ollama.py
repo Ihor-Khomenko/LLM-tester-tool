@@ -35,6 +35,8 @@ ap.add_argument("--temperature", type=float, default=0.0)
 ap.add_argument("--seed", type=int, default=42)
 ap.add_argument("--soft-s3-allow", action="store_true",
                 help="Set policy soft_s3_allow_without_s4=True (PR#28 flag ON)")
+ap.add_argument("--s3-biz-lookup", action="store_true",
+                help="Set policy s3_biz_lookup=True (arm oberih_s3biz: soften read-only business-lookup S3 FPs)")
 ap.add_argument("--policy-json", default="",
                 help='JSON object merged into SentinelPolicy (e.g. enable_s2/s3/t0 flags)')
 ap.add_argument("--run-tag", default="", help="Stored in each result row for resumability identity")
@@ -112,6 +114,8 @@ cfg = McpScenarioEvalConfig(defenses=DEFS, mock=False, no_s4=True, mode="live", 
 policy = load_policy(None)
 if a.soft_s3_allow:
     policy.soft_s3_allow_without_s4 = True
+if a.s3_biz_lookup:
+    policy.s3_biz_lookup = True
 if a.policy_json.strip():
     from llm_tester.sentinel.policy import merge_policy
     overrides = json.loads(a.policy_json)
@@ -224,6 +228,7 @@ for lang, trace in traces:
              "date": datetime.date.today().isoformat(), "ts": datetime.datetime.now().isoformat(),
              "case_status": "scored" if all(dn in res and res[dn]["status"] == "scored" for dn in DEFS) else "incomplete",
              "temperature": a.temperature, "seed": a.seed, "soft_s3_allow_without_s4": bool(a.soft_s3_allow),
+             "s3_biz_lookup": bool(a.s3_biz_lookup),
              "policy_json": a.policy_json or None, "run_tag": a.run_tag or None, "defenses": DEFS,
              "llm_tester_sha": os.environ.get("LLM_TESTER_SHA"),
              "results": res}

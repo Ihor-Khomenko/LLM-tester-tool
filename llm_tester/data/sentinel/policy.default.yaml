@@ -68,6 +68,11 @@ high_risk_action: block
 # Opt-in decision-policy experiment (default preserves historical hard-block).
 soft_s3_allow_without_s4: false
 
+# Opt-in A/B arm ``oberih_s3biz`` (default OFF — historical S3 soft scale 0.55).
+# Softens read-only business-lookup intent-mismatch FPs; see policy.py.
+s3_biz_lookup: false
+s3_readonly_scale: 0.20
+
 # Graded action A/B (default ``block``). ``graded`` quarantines harmless
 # local file writes instead of hard-blocking; exfil/secret writes stay blocked.
 # Defense arm: ``oberih_graded`` / ``--defense oberih_graded``.

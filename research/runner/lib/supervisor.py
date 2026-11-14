@@ -186,6 +186,7 @@ def steps_for(job, pol, outdir):
                "--run-tag", f"{job['id']}:{name}", "--out", str(out)]
         if job.get("families"): cmd += ["--families", ",".join(job["families"])]
         if v.get("soft_s3_allow"): cmd.append("--soft-s3-allow")
+        if v.get("s3_biz_lookup"): cmd.append("--s3-biz-lookup")
         if v.get("policy_json"): cmd += ["--policy-json", json.dumps(v["policy_json"], separators=(",", ":"))]
         S.append((name, out, cmd, dmap, "live"))
     return S
