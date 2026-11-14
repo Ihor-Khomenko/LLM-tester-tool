@@ -133,6 +133,10 @@ def build_baseline(
         guard = build_oberih(**kw)
         if is_graded_defense(name):
             guard.policy.response_mode = "graded"
+        from llm_tester.sentinel.branding import is_s3biz_defense
+
+        if is_s3biz_defense(name):
+            guard.policy.s3_biz_lookup = True
         return guard
     raise ValueError(
         f"Unknown baseline {name!r}. Choose from: {', '.join(BASELINE_NAMES)}"

@@ -27,6 +27,13 @@ llmtest mcp-scenario-eval \
   --defense oberih --defense oberih_graded \
   --lang en --json
 
+# S3 business-lookup A/B (opt-in; default S3 soft scale 0.55 unchanged).
+# Softens intent-mismatch FPs on read-only lookups (lookup_vendor, …).
+llmtest mcp-scenario-eval \
+  --out-dir /tmp/mcp_eval_s3biz \
+  --defense oberih --defense oberih_s3biz \
+  --lang en --json
+
 # Multi-variant expansion for meaningful Wilson CIs (min_n default 5)
 llmtest mcp-scenario-eval \
   --out-dir /tmp/mcp_eval_var \

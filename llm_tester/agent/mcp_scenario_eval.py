@@ -40,6 +40,7 @@ from llm_tester.sentinel.branding import (
     is_graded_defense,
     is_no_s4_defense,
     is_oberih_defense,
+    is_s3biz_defense,
     is_s4_only_defense,
     known_defense_help,
 )
@@ -405,6 +406,8 @@ def _build_defense(
             pol.enable_s4 = False
         if is_graded_defense(n):
             pol.response_mode = "graded"
+        if is_s3biz_defense(n):
+            pol.s3_biz_lookup = True
         if config.s4_mock and pol.enable_s4 and llm is None:
             from llm_tester.agent.s4_mock import MockS4Chat
 

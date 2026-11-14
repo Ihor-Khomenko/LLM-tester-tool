@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added — Opt-in A/B arm `oberih_s3biz` (S3 business-lookup soften)
+
+* **Problem:** default Оберіг soft S3 (lite scale 0.55) plus mild S2 taint on
+  opaque business ids tips noisy-OR over τ=0.7 on read-only lookups
+  (`lookup_vendor`, `lookup_approver`, …) whose names/args lack lexical overlap
+  with the user request (`s3:intent_mismatch` FPs).
+* **Arm `oberih_s3biz` / `s3_biz`:** opt-in only (`s3_biz_lookup: true`). Lowers
+  soft S3 scale for non-side-effect tools without exfil-sink args, expands lite
+  similarity with tool description + deterministic business synonyms, and
+  ALLOWs non-SE calls at/above τ when there is no exfil-capable S1/S2 signal.
+* **Default unchanged:** τ=0.7, noisy-OR weights, historical S3 scales (0.55 /
+  0.85), S2 provenance, and `soft_s3_allow_without_s4=false` stay byte-for-byte
+  identical when the arm is off. Deterministic; no LLM on the default path.
+* Runner variant + `--s3-biz-lookup`; analyzer `FULL_ARMS`; docs / tests with
+  synthetic business-lookup fixtures (no third-party corpus text).
+
 ### Changed — Oberih-named data/docs paths (legacy kept)
 
 * Canonical defaults: `llm_tester/data/oberih/policy.default.yaml`,

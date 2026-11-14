@@ -58,6 +58,15 @@ _GRADED_ALIASES: FrozenSet[str] = frozenset(
         "graded",
     }
 )
+_S3BIZ_ALIASES: FrozenSet[str] = frozenset(
+    {
+        f"{MACHINE_ID}_s3biz",
+        "oberih-s3biz",
+        "s3_biz",
+        "s3biz",
+        "s3-biz",
+    }
+)
 
 
 def normalize_defense_token(name: Optional[str]) -> str:
@@ -77,6 +86,8 @@ def is_oberih_defense(name: Optional[str]) -> bool:
         return True
     if n in _GRADED_ALIASES or n_us in {a.replace("-", "_") for a in _GRADED_ALIASES}:
         return True
+    if is_s3biz_defense(n):
+        return True
     return False
 
 
@@ -87,6 +98,17 @@ def is_graded_defense(name: Optional[str]) -> bool:
         "oberih_graded",
         "sentinel_graded",
         "graded",
+    }
+
+
+def is_s3biz_defense(name: Optional[str]) -> bool:
+    """True if ``name`` selects the opt-in S3 business-lookup soften arm."""
+    n = (name or "").lower().strip()
+    n_us = n.replace("-", "_")
+    return n in _S3BIZ_ALIASES or n_us in {
+        "oberih_s3biz",
+        "s3_biz",
+        "s3biz",
     }
 
 
@@ -124,6 +146,8 @@ def canonical_defense_id(name: Optional[str]) -> str:
         return "s4_only"
     if is_graded_defense(n):
         return f"{MACHINE_ID}_graded"
+    if is_s3biz_defense(n):
+        return f"{MACHINE_ID}_s3biz"
     if is_no_s4_defense(n):
         return f"{MACHINE_ID}_no_s4"
     if is_full_stack_defense(n):
@@ -172,6 +196,8 @@ def defense_cli_choices() -> Tuple[str, ...]:
         f"{LEGACY_MACHINE_ID}_no_s4",
         f"{MACHINE_ID}_graded",
         f"{LEGACY_MACHINE_ID}_graded",
+        f"{MACHINE_ID}_s3biz",
+        "s3_biz",
         "s4_only",
     )
 
@@ -199,7 +225,7 @@ def known_defense_help() -> str:
     return (
         f"{MACHINE_ID}|{LEGACY_MACHINE_ID}|{MACHINE_ID}_no_s4|"
         f"{LEGACY_MACHINE_ID}_no_s4|{MACHINE_ID}_graded|"
-        f"{LEGACY_MACHINE_ID}_graded|s4_only|none"
+        f"{LEGACY_MACHINE_ID}_graded|{MACHINE_ID}_s3biz|s3_biz|s4_only|none"
     )
 
 

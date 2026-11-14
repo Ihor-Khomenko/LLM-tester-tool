@@ -39,6 +39,10 @@ max_job_min: 120
 # Detector arms are comparison baselines only — Oberih τ/weights/S3/provenance are unchanged.
 variants:
   soft_s3: {soft_s3_allow: true}
+  # Softens S3 intent-mismatch FPs on read-only business lookups (lookup_vendor, …).
+  # Default Oberih τ/weights/S3 scale/S2 provenance unchanged when this arm is off.
+  oberih_s3biz: {s3_biz_lookup: true}
+  s3_biz: {s3_biz_lookup: true}   # short alias for enqueue
   s1:      {policy_json: {enable_s1: true, enable_s2: false, enable_s3: false, enable_s4: false}}
   s1s2:    {policy_json: {enable_s1: true, enable_s2: true, enable_s3: false, enable_s4: false}}
   noT0:    {policy_json: {enable_t0: false}}

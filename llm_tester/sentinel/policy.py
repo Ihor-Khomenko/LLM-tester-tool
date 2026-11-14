@@ -139,6 +139,20 @@ class SentinelPolicy:
     # S3 scale. Opt-in only — requires explicit approval to enable in production.
     soft_s3_allow_without_s4: bool = False
 
+    # Opt-in A/B arm ``oberih_s3biz`` / ``s3_biz`` (default OFF).
+    # Softens S3 intent-mismatch false positives on read-only / non-side-effect
+    # business lookups (lookup_vendor, lookup_approver, …) whose names/args lack
+    # lexical overlap with the user request. When True:
+    #   * lite soft scale for non-side-effect tools uses ``s3_readonly_scale``
+    #     (default path keeps the historical 0.55);
+    #   * lite similarity may expand with tool description + business synonyms;
+    #   * cascade ALLOWs non-side-effect calls at/above ``tau_high`` when there
+    #     is no exfil-capable S1/S2 signal and no critical S3 mismatch.
+    # Does **not** change default τ / noisy-OR weights / S2 provenance / the
+    # default 0.55/0.85 S3 scales when False. Deterministic; no LLM calls.
+    s3_biz_lookup: bool = False
+    s3_readonly_scale: float = 0.20
+
     # Graded action response (default ``block`` = historical hard-block).
     # ``graded``: after a cascade BLOCK of a local file write with no
     # canary/tainted secret, emit ``Decision.QUARANTINE`` instead (exfil /

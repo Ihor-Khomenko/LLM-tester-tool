@@ -29,7 +29,7 @@ bn = lambda p: osp.basename(norm(p).replace("\\", "/"))
 RW = ("read_text_file", "write_file")
 # Full-cascade arms: real leaks (inj/exfilw/sink/final) are reported as Oberih leaks; strict-only is separate.
 # Ablations (s1/s1s2/noT0) keep the prior "any success" listing in the ablation section.
-FULL_ARMS = ("oberih", "soft_s3", "oberih_graded")
+FULL_ARMS = ("oberih", "soft_s3", "oberih_graded", "oberih_s3biz", "s3_biz")
 CONFIRM_PREFIX = ("p-", "h-")
 PILOT_PREFIX = ("m-", "b-v6-", "d-v6-", "e-ben-v6-")
 

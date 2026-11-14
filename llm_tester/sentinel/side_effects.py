@@ -210,6 +210,53 @@ def is_side_effect_tool(
     return False
 
 
+# Argument names that indicate an exfiltration / irreversible sink. Used by the
+# opt-in ``s3_biz_lookup`` arm (and shared helpers) so read-only soften does not
+# apply to calls that still pass iban/url/path/recipient-style sinks.
+EXFIL_SINK_ARG_MARKERS: Tuple[str, ...] = (
+    "recipient",
+    "to",
+    "email",
+    "url",
+    "uri",
+    "href",
+    "path",
+    "filepath",
+    "filename",
+    "command",
+    "cmd",
+    "iban",
+    "account",
+    "password",
+    "token",
+    "api_key",
+    "wire_to",
+    "payee",
+    "destination",
+    "address",
+    "phone",
+    # Access-control / privilege sinks (e.g. smart-lock grant guest).
+    "guest",
+    "guest_id",
+    "access",
+)
+
+
+def has_exfil_sink_args(arguments: Optional[Dict[str, Any]]) -> bool:
+    """True when the planned call passes an exfil/irreversible sink argument.
+
+    Matching is exact or suffix (``dest_iban``, ``file_path``). A bare prefix
+    like ``account_id`` / ``email_subject`` is **not** treated as a sink key —
+    those are common business-lookup identifiers, not exfil destinations.
+    """
+    for key in arguments or {}:
+        kl = str(key).lower().strip()
+        for marker in EXFIL_SINK_ARG_MARKERS:
+            if kl == marker or kl.endswith("_" + marker):
+                return True
+    return False
+
+
 def looks_like_path_arg(name: str) -> bool:
     key = name.lower().strip()
     if key in _PATH_ARG_NAMES:

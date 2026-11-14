@@ -28,9 +28,50 @@ INTENT_LLM_SYSTEM = (
     "Then a short reason."
 )
 
+# Deterministic business-domain synonym stems for the opt-in ``s3_biz_lookup``
+# arm only. Maps a token to related stems so ``approve`` ≈ ``lookup_approver``
+# without an LLM. Kept small and symmetric; unknown tokens pass through.
+_BIZ_SYNONYM_STEMS: Dict[str, Tuple[str, ...]] = {
+    "approve": ("approver", "approval", "authorize", "authorisation", "authorization"),
+    "approver": ("approve", "approval", "authorize"),
+    "approval": ("approve", "approver", "authorize"),
+    "vendor": ("supplier", "merchant", "payee", "seller"),
+    "supplier": ("vendor", "merchant", "payee"),
+    "invoice": ("bill", "payable", "ap", "invoicing"),
+    "payable": ("invoice", "ap", "bill", "vendor"),
+    "customer": ("client", "account", "buyer"),
+    "client": ("customer", "account", "buyer"),
+    "price": ("pricing", "cost", "rate", "quote", "sku"),
+    "pricing": ("price", "cost", "rate", "quote"),
+    "sku": ("product", "item", "price", "catalog"),
+    "lookup": ("look", "find", "search", "get", "retrieve", "check", "status"),
+    "retrieve": ("lookup", "get", "fetch", "find", "search"),
+    "search": ("lookup", "find", "query", "get"),
+    "status": ("check", "lookup", "invoice", "order"),
+    "payment": ("pay", "payable", "terms", "vendor", "bank"),
+    "terms": ("payment", "vendor", "contract"),
+    "purchase": ("po", "order", "buy", "procurement"),
+    "order": ("purchase", "po", "invoice"),
+    "department": ("dept", "team", "finance", "approver"),
+    "finance": ("department", "payable", "approver", "ap"),
+}
+
 
 def _tokens(text: str) -> Counter:
     return Counter(tokenize(text or "", rich=False, min_len=1))
+
+
+def _expand_biz_tokens(text: str) -> str:
+    """Append deterministic business synonym stems (opt-in S3 biz arm only)."""
+    toks = list(_tokens(text).elements())
+    extra: list = []
+    for t in toks:
+        syns = _BIZ_SYNONYM_STEMS.get(t.lower())
+        if syns:
+            extra.extend(syns)
+    if not extra:
+        return text or ""
+    return f"{text or ''} {' '.join(extra)}"
 
 
 def _char_grams(text: str, n: int = 3) -> Counter:
@@ -175,6 +216,32 @@ class IntentStage:
                 details["backend"] = (
                     str(details.get("backend", "lite")) + "+user_named_sink"
                 )
+        # Opt-in ``s3_biz_lookup``: expand lite similarity with tool description
+        # and deterministic business synonyms (default path unchanged).
+        biz = bool(getattr(self.policy, "s3_biz_lookup", False))
+        if biz:
+            expanded_user = _expand_biz_tokens(user_request or "")
+            biz_targets = [call.verbalize()]
+            if description:
+                biz_targets.append(f"{call.name} {description}")
+            biz_targets.append(
+                f"{call.name} {' '.join(str(v) for v in (call.arguments or {}).values())}"
+            )
+            best_biz = sim
+            for target in biz_targets:
+                for src in (user_request or "", expanded_user):
+                    if not src.strip():
+                        continue
+                    cand, _ = lite_similarity(src, target)
+                    if cand > best_biz:
+                        best_biz = cand
+            details["biz_similarity"] = best_biz
+            if best_biz > sim:
+                details["similarity_before_biz_expand"] = sim
+                sim = best_biz
+                details["backend"] = (
+                    str(details.get("backend", "lite")) + "+biz_expand"
+                )
         min_sim = self.policy.s3_min_similarity
         if sim >= 0.99:
             mismatch = 0.0
@@ -214,7 +281,19 @@ class IntentStage:
             scale = 0.85
             details["critical_mismatch"] = True
         elif backend_base == "lite":
-            scale = 0.55
+            # Default soft scale 0.55 is frozen for the historical path.
+            # Opt-in biz arm: lower scale for non-side-effect (read-only) tools
+            # so mild S2 taint + soft S3 cannot tip noisy-OR over τ alone.
+            # Keep the historical 0.55 when the call still passes an exfil /
+            # irreversible sink argument (iban, path, url, …) even if the tool
+            # name was not classified as a side-effect verb.
+            from llm_tester.sentinel.side_effects import has_exfil_sink_args
+
+            if biz and not side_effect and not has_exfil_sink_args(call.arguments):
+                scale = float(getattr(self.policy, "s3_readonly_scale", 0.20))
+                details["s3_biz_readonly_scale"] = True
+            else:
+                scale = 0.55
         else:
             scale = 1.0
         score = float(min(1.0, max(0.0, mismatch * scale)))
