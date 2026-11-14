@@ -2,7 +2,7 @@
 
 Converts [mcp-security-research](https://github.com/Ihor-Khomenko/mcp-security-research)
 scenario exports (schema **1.0**, from `python -m scenarios.export`) into
-[`mcp-sentinel-trace/v1`](mcp-sentinel-trace-format.md) JSONL for
+[`mcp-sentinel-trace/v1`](oberih-trace-format.md) JSONL for
 `llmtest guard-eval`.
 
 ## Usage

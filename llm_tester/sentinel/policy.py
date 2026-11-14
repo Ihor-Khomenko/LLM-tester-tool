@@ -8,8 +8,14 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from llm_tester.sentinel.side_effects import DEFAULT_SIDE_EFFECT_VERBS
 
+_DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+# Canonical Oberih path; legacy sentinel path kept for research runners / old installs.
+DEFAULT_POLICY_PATH_OBERIH = _DATA_ROOT / "oberih" / "policy.default.yaml"
+DEFAULT_POLICY_PATH_LEGACY = _DATA_ROOT / "sentinel" / "policy.default.yaml"
 DEFAULT_POLICY_PATH = (
-    Path(__file__).resolve().parent.parent / "data" / "sentinel" / "policy.default.yaml"
+    DEFAULT_POLICY_PATH_OBERIH
+    if DEFAULT_POLICY_PATH_OBERIH.is_file()
+    else DEFAULT_POLICY_PATH_LEGACY
 )
 
 # Sensitive sink argument names (S2 weights). Aligned with the concept doc:
@@ -222,11 +228,20 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     return raw
 
 
+def resolve_default_policy_path() -> Optional[Path]:
+    """Return the first existing default policy YAML (Oberih, then legacy)."""
+    for candidate in (DEFAULT_POLICY_PATH_OBERIH, DEFAULT_POLICY_PATH_LEGACY):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def load_policy(path: Optional[Path] = None) -> SentinelPolicy:
     """Load policy from YAML, falling back to built-in defaults."""
     if path is None:
-        if DEFAULT_POLICY_PATH.is_file():
-            return SentinelPolicy.from_dict(_load_yaml(DEFAULT_POLICY_PATH))
+        resolved = resolve_default_policy_path()
+        if resolved is not None:
+            return SentinelPolicy.from_dict(_load_yaml(resolved))
         return SentinelPolicy()
     path = Path(path)
     if not path.is_file():

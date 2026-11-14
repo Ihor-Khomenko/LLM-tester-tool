@@ -1,4 +1,4 @@
-"""YAML config for ``llmtest sentinel-proxy``."""
+"""YAML config for ``llmtest oberih-proxy`` (alias ``sentinel-proxy``)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,18 @@ from typing import Any, Dict, List, Optional, Union
 import yaml
 
 DEFAULT_THRESHOLD = 0.7
+
+_DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+DEFAULT_PROXY_PATH_OBERIH = _DATA_ROOT / "oberih" / "proxy.default.yaml"
+DEFAULT_PROXY_PATH_LEGACY = _DATA_ROOT / "sentinel" / "proxy.default.yaml"
+
+
+def resolve_default_proxy_path() -> Optional[Path]:
+    """Return the first existing default proxy YAML (Oberih, then legacy)."""
+    for candidate in (DEFAULT_PROXY_PATH_OBERIH, DEFAULT_PROXY_PATH_LEGACY):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 @dataclass

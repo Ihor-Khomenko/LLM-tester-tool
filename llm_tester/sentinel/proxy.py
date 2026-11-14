@@ -17,7 +17,7 @@ S4 optional; ``response_mode`` default ``block``).
 
 Usage::
 
-    llmtest sentinel-proxy --config llm_tester/data/sentinel/proxy.default.yaml -- \\
+    llmtest oberih-proxy --config llm_tester/data/oberih/proxy.default.yaml -- \\
       npx -y @modelcontextprotocol/server-filesystem /tmp
 
     llmtest sentinel-proxy --transport http --listen 127.0.0.1:8765 -- \\

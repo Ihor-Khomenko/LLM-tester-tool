@@ -1,0 +1,32 @@
+# Оберіг (Oberih) proxy config (stdio by default; optional HTTP).
+# Canonical path: llm_tester/data/oberih/proxy.default.yaml
+# Legacy path (identical effect): llm_tester/data/sentinel/proxy.default.yaml
+# Thresholds mirror OberihPolicy; ``threshold`` sets tau_high.
+
+threshold: 0.7
+tau_low: 0.25
+
+# Optional S4 LLM judge (off by default — no live API in CI).
+enable_s4: false
+# s4_provider: ollama
+# s4_model: llama-guard3:1b
+
+# Trusted user task for provenance (also settable via --user-task).
+user_task: ""
+
+# T0 enforcement on tools/list (and tools/call to flagged names):
+#   enforce — strip flagged tools from the list returned to the client and
+#             block tools/call with a JSON-RPC error (default)
+#   warn    — legacy: pass tools through unchanged, annotate only
+t0_mode: enforce
+
+# JSONL audit log (block / sanitize / allow + latency). Null → decisions only
+# via policy.log_path / --audit-log CLI flag.
+audit_log: null
+
+# Optional full Oberih policy YAML (stage toggles, sinks, …).
+# When set, threshold / tau_low / enable_s4 still override matching keys.
+# policy: llm_tester/data/oberih/policy.default.yaml
+
+transport: stdio   # stdio | http
+# listen: 127.0.0.1:8765   # for transport: http
