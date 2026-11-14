@@ -268,14 +268,18 @@ def test_integration_latency_overhead_measured():
 
 def test_default_proxy_yaml_loads():
     root = Path(__file__).resolve().parents[2]
-    path = root / "llm_tester" / "data" / "sentinel" / "proxy.default.yaml"
-    assert path.is_file()
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert data["threshold"] == 0.7
-    assert data["enable_s4"] is False
-    cfg = load_proxy_config(path)
-    assert cfg.transport == "stdio"
-    assert cfg.t0_mode == "enforce"
+    for rel in (
+        ("llm_tester", "data", "oberih", "proxy.default.yaml"),
+        ("llm_tester", "data", "sentinel", "proxy.default.yaml"),
+    ):
+        path = root.joinpath(*rel)
+        assert path.is_file(), path
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert data["threshold"] == 0.7
+        assert data["enable_s4"] is False
+        cfg = load_proxy_config(path)
+        assert cfg.transport == "stdio"
+        assert cfg.t0_mode == "enforce"
 
 
 def _poisoned_tool(name: str = "fs.read") -> dict:

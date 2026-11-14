@@ -7,7 +7,7 @@ Supported sources
 * **injecagent** — official GitHub JSON (optional download)
 * **jsonl / msr** — external ``mcp-sentinel-trace/v1`` JSONL (mcp-security-research)
 
-See ``docs/mcp-sentinel-trace-format.md`` for the interchange schema shared with
+See ``docs/oberih-trace-format.md`` for the interchange schema shared with
 https://github.com/Ihor-Khomenko/mcp-security-research
 """
 
@@ -248,7 +248,7 @@ def parse_trace_record(data: Dict[str, Any], *, default_id: str = "") -> TraceSt
             f"{data.get('id') or default_id!r}. "
             f"Accepted: {sorted(SCHEMA_VERSIONS_ACCEPTED)} or "
             f"mcp-security-research '1.0' (attack_class+trace). "
-            f"See docs/mcp-sentinel-trace-format.md."
+            f"See docs/oberih-trace-format.md."
         )
     elif not version:
         if not _looks_like_v1(data):
@@ -627,7 +627,7 @@ def resolve_traces(
         if path is None:
             raise FileNotFoundError(
                 "External JSONL requires --dataset-path pointing to an "
-                f"{SCHEMA_VERSION} file (see docs/mcp-sentinel-trace-format.md)."
+                f"{SCHEMA_VERSION} file (see docs/oberih-trace-format.md)."
             )
         traces = load_jsonl_traces(path)
         return traces[:limit] if limit is not None else traces

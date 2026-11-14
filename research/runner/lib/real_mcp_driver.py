@@ -75,6 +75,14 @@ def base_env(node, logs, ep_dir):
             "SINK_LOG": str(logs / "sink.log"), "HELPER_LOG": str(logs / "helper.log"), "HELPER_SPEC": str(ep_dir / "helper_spec.json"),
             "PYTHONPATH": os.environ.get("PYTHONPATH", ""), "PYTHONUNBUFFERED": "1"}
 
+def _proxy_config_relatives():
+    # Prefer Oberih path; keep legacy sentinel path for older checkouts / runners.
+    return (
+        "llm_tester/data/oberih/proxy.default.yaml",
+        "llm_tester/data/sentinel/proxy.default.yaml",
+    )
+
+
 def _proxy_config_path():
     override = os.environ.get("OBERIH_PROXY_CONFIG")
     if override:
@@ -82,14 +90,16 @@ def _proxy_config_path():
     for root in (os.environ.get("PYTHONPATH") or "").split(os.pathsep):
         if not root:
             continue
-        cand = Path(root) / "llm_tester/data/sentinel/proxy.default.yaml"
-        if cand.is_file():
-            return cand
+        for rel in _proxy_config_relatives():
+            cand = Path(root) / rel
+            if cand.is_file():
+                return cand
     # Editable install / in-repo: walk up from this file to the package root.
     for p in Path(__file__).resolve().parents:
-        cand = p / "llm_tester/data/sentinel/proxy.default.yaml"
-        if cand.is_file():
-            return cand
+        for rel in _proxy_config_relatives():
+            cand = p / rel
+            if cand.is_file():
+                return cand
     raise SystemExit("proxy.default.yaml not found (set OBERIH_PROXY_CONFIG or PYTHONPATH)")
 
 

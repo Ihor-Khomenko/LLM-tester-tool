@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed — Oberih-named data/docs paths (legacy kept)
+
+* Canonical defaults: `llm_tester/data/oberih/policy.default.yaml`,
+  `llm_tester/data/oberih/proxy.default.yaml`,
+  `docs/oberih-trace-format.md`.
+* Legacy paths `llm_tester/data/sentinel/*` and
+  `docs/mcp-sentinel-trace-format.md` remain (loaders fall back; package-data
+  includes both). Trace schema id `mcp-sentinel-trace/v1` unchanged.
+* Implementation package stays `llm_tester.sentinel` (import via
+  `llm_tester.oberih`); no parameter / τ / weight changes.
+
 ### Added — Detector baselines + third-party FP corpora
 
 * **Comparison arms** (PromptGuard-style T1/T2, CPU/MPS, lazy `[detectors]` deps;

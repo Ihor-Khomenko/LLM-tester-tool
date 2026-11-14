@@ -71,6 +71,7 @@ include = ["llm_tester*"]
 
 [tool.setuptools.package-data]
 llm_tester = [
+    "data/oberih/*",
     "data/sentinel/*",
     "data/agent/*",
     "data/external_datasets/*",

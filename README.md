@@ -6,7 +6,7 @@ For research purposes only. Use responsibly.
 
 ## Features
 
-- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest baselines-eval`, `llmtest detector-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest oberih-proxy` (alias `sentinel-proxy`), `llmtest index`, `llmtest compare`, `llmtest figures`
+- Installable package with CLI: `llmtest run`, `llmtest report`, `llmtest datasets`, `llmtest guard-eval`, `llmtest baselines-eval`, `llmtest detector-eval`, `llmtest guard-calibrate`, `llmtest adaptive-attack`, `llmtest mcp-scenario-eval`, `llmtest agent-bench`, `llmtest oberih-proxy`, `llmtest index`, `llmtest compare`, `llmtest figures`
 - **Reproducible run artefacts** (`--run-dir`, default `runs/<YYYYMMDD>_<name>`): `config.yaml`, `env.json`, `results.jsonl.gz`, `metrics.json`, `README.md` (secrets never written)
 - **Thesis-ready figures**: black-and-white matplotlib (hatching/markers/linestyles), 300 dpi PNG + SVG, max width ≈158 mm (A4 margins 30/15/20/20 mm), Times New Roman with Liberation/DejaVu Serif fallback, Ukrainian captions `Рисунок 4.n` / `Таблиця 4.n`
 - Multi-provider support via OpenAI-compatible APIs: **Ollama**, **OpenAI**, **xAI (Grok)**, **OpenRouter**, **Groq**
@@ -21,7 +21,7 @@ For research purposes only. Use responsibly.
 - Comparison detector arms: `prompt_guard2`, `protectai_deberta`, `llama_guard3`, `qwen3_guard` (optional `[detectors]`; CPU/MPS; skip offline)
 - Guards: `none` or `llmguard`
 - Judges: phrase matching (default), optional Llama Guard or LLM-as-judge
-- **Оберіг (Oberih)** — cascaded provenance-aware guard for agentic / MCP tool use (formerly MCP-Sentinel; see below)
+- **Оберіг (Oberih)** — cascaded provenance-aware guard for agentic / MCP tool use
 - JSONL logging of **every** response (provider, model, timestamp, params, latency)
 - Rate-limit friendliness: `--max-requests`, `--delay`, 429 retry/backoff, `--resume`
 - Deterministic settings: configurable `temperature` and `seed`
@@ -44,10 +44,9 @@ pip install -e ".[dev]"
 # Optional LLM Guard support:
 pip install -e ".[guard]"
 # Оберіг / Oberih (self-contained subpackage; S1–S2 need no extras):
-pip install -e ".[oberih]"          # preferred
-pip install -e ".[sentinel]"        # legacy alias of [oberih]
+pip install -e ".[oberih]"
 # Optional: S3 embeddings / MCP SDK helpers
-pip install -e ".[oberih-all]"      # or legacy [sentinel-all]
+pip install -e ".[oberih-all]"
 # Thesis figures (matplotlib):
 pip install -e ".[figures]"
 # Optional HF detectors (torch/transformers) — kept out of the base install:
@@ -171,9 +170,9 @@ Suggested captions follow DSTU style: **Рисунок 4.n – …** (below figu
 
 Research MVP of a **cascaded provenance-aware runtime guard** that sits between an MCP host (agent) and tool servers.
 
-**Names:** Ukrainian display **Оберіг**, ASCII **Oberih**, machine id `oberih`. Formerly **MCP-Sentinel**; package path `llm_tester.sentinel`, imports (`SentinelGuard`, `build_sentinel`), CLI `sentinel-proxy`, and defense id `sentinel` remain supported aliases. Trace schema `mcp-sentinel-trace/v1` is unchanged (shared with mcp-security-research).
+**Names:** Ukrainian display **Оберіг**, ASCII **Oberih**, machine id `oberih`.
 
-**Architecture:** `llm_tester/sentinel` is **self-contained** (no imports from the rest of `llm_tester` except an optional duck-typed `LLMChat` provider). Prefer `pip install llm-tester[oberih]` (alias `[sentinel]`). New code may `import llm_tester.oberih`. Evaluation lives in `llm_tester.agent` (`guard-eval`, `agent-bench`, trace loaders).
+**Architecture:** install with `pip install llm-tester[oberih]` and import via `llm_tester.oberih` (self-contained guard; no imports from the rest of `llm_tester` except an optional duck-typed `LLMChat` provider). Evaluation lives in `llm_tester.agent` (`guard-eval`, `agent-bench`, trace loaders).
 
 Checkpoints:
 
@@ -196,8 +195,6 @@ Cascade stages (cheap → expensive):
 
 ```python
 from llm_tester.oberih import OberihGuard, ToolCall, ToolSpec, build_oberih
-# Legacy equivalents still work:
-# from llm_tester.sentinel import SentinelGuard, build_sentinel
 from llm_tester.agent.provider_adapter import build_llm_chat  # host-side adapter
 
 # Any OpenAI-compatible API: ollama | openai | xai | openrouter | groq
@@ -212,7 +209,7 @@ decision = guard.check_tool_call(
 # decision.decision, .risk_score, .stage, .reasons, .latency_ms
 ```
 
-S1–S2 are dependency-free. S3 backends: `lite` (default), `embeddings` (`[oberih-s3]` / `[sentinel-s3]`), or `llm` (injected provider). S4 is optional and only runs in the grey zone when an `LLMChat` is injected.
+S1–S2 are dependency-free. S3 backends: `lite` (default), `embeddings` (`[oberih-s3]`), or `llm` (injected provider). S4 is optional and only runs in the grey zone when an `LLMChat` is injected.
 
 ### Offline evaluation
 
@@ -269,7 +266,6 @@ llmtest import-mcp-sim \
 llmtest adaptive-attack --out-dir /tmp/adaptive_mock \
   --family a_para --family a_iter --defense none --defense oberih \
   --k 3 --limit 3 --mock
-# (--defense sentinel still accepted)
 
 # mcp-security-research scenarios w/ and w/o Оберіг (docs/mcp-scenario-eval.md)
 # replay = detection-on-traces (TPR/FPR); live = measured ASR via agent + mock tools
@@ -298,7 +294,7 @@ llmtest grey-zone-rebuild --from-run runs/<prior> --dataset synthetic \
 llmtest guard-calibrate --dataset synthetic --split-by attack_type \
   --train-frac 0.5 --seed 0 --out guard_calibrate.json
 
-Interchange schema: [`docs/mcp-sentinel-trace-format.md`](docs/mcp-sentinel-trace-format.md) (`mcp-sentinel-trace/v1`, plus auto-adapter for research export `1.0`). Unknown schemas fail loudly. Metrics report **symmetric** any-intervention (block|ask_user|sanitize) and block-only TPR/FPR. Risk uses noisy-OR over enabled stages (ablations are monotone).
+Interchange schema: [`docs/oberih-trace-format.md`](docs/oberih-trace-format.md) (native v1, plus auto-adapter for research export `1.0`; schema id shared with mcp-security-research). Unknown schemas fail loudly. Metrics report **symmetric** any-intervention (block|ask_user|sanitize) and block-only TPR/FPR. Risk uses noisy-OR over enabled stages (ablations are monotone).
 
 Reports TPR, FPR, F1, ASR reduction, escalation rate, latency p50/p95 into `metrics.json` + `results.jsonl.gz`. Numbers from a run are **measured preliminary results**, not published claims.
 
@@ -322,7 +318,7 @@ llmtest agent-bench --provider ollama --model qwen2.5:7b --without-guard \
 
 `--max-retries` defaults to **1** (avoid burning free-tier quota on 429). stderr logs `provider_requests_used`. Suites: `builtin` (benign+attack), `msr`/`jsonl`, `injecagent`, `agentdojo` (scaffold).
 
-### Оберіг proxy (`oberih-proxy` / alias `sentinel-proxy`)
+### Оберіг proxy (`oberih-proxy`)
 
 Transparent MCP proxy between a client and a real MCP server. Applies the
 Оберіг cascade at **T0** (`tools/list`), **T2** (`tools/call` request), and
@@ -335,23 +331,22 @@ and optional S4 (`enable_s4: false` by default).
 `notifications/tools/list_changed` → re-list) are **stripped** from the
 `tools/list` payload returned to the client, and `tools/call` to those names
 fails with a JSON-RPC error. Set `t0_mode: warn` (or `--t0-mode warn`) for the
-legacy annotate-only `_sentinel` behaviour. **T1** also sanitizes
-`structuredContent` (not only `content[].text`). Backend subprocesses always
-receive a minimal sanitized environment (no API keys), even without the `mcp`
-package. Stdio host writes are locked; HTTP mode correlates backend replies by
-JSON-RPC `id` so notifications do not desync the session.
+legacy annotate-only mode. **T1** also sanitizes `structuredContent` (not only
+`content[].text`). Backend subprocesses always receive a minimal sanitized
+environment (no API keys), even without the `mcp` package. Stdio host writes
+are locked; HTTP mode correlates backend replies by JSON-RPC `id` so
+notifications do not desync the session.
 
 **stdio (default)** — point your MCP host at this process instead of the backend:
 
 ```sh
 # Filesystem MCP example
 llmtest oberih-proxy \
-  --config llm_tester/data/sentinel/proxy.default.yaml \
+  --config llm_tester/data/oberih/proxy.default.yaml \
   --audit-log /tmp/oberih_audit.jsonl \
   --user-task "List and read files under /tmp/vault only" \
   -- \
   npx -y @modelcontextprotocol/server-filesystem /tmp/vault
-# `llmtest sentinel-proxy …` remains an alias
 ```
 
 **Optional HTTP** JSON-RPC front-end (same hooks; one POST per message):
@@ -362,13 +357,13 @@ llmtest oberih-proxy --transport http --listen 127.0.0.1:8765 \
   npx -y @modelcontextprotocol/server-filesystem /tmp/vault
 ```
 
-Default proxy config: `llm_tester/data/sentinel/proxy.default.yaml`. Core relay
+Default proxy config: `llm_tester/data/oberih/proxy.default.yaml`. Core relay
 is dependency-free (sanitized stdio env is built in). Not a full FastMCP
 re-implementation.
 
 ### Policy
 
-Default YAML: `llm_tester/data/sentinel/policy.default.yaml` (`τ_low`, `τ_high`, stage toggles, sensitive sinks, logging path).
+Default YAML: `llm_tester/data/oberih/policy.default.yaml` (`τ_low`, `τ_high`, stage toggles, sensitive sinks, logging path).
 
 ## Offline tests & CI
 
@@ -457,7 +452,7 @@ llmtest report runs/harmfulqa_ollama/results.jsonl.gz
 
 ### Оберіг (українською)
 
-Канонічна назва продукту — **Оберіг** (лат. Oberih, машинний id `oberih`). Колишня назва MCP-Sentinel; аліаси `sentinel` / `sentinel-proxy` / `llm_tester.sentinel` збережено для сумісності.
+Канонічна назва продукту — **Оберіг** (лат. Oberih, машинний id `oberih`).
 
 Каскадний провенансно-орієнтований монітор між MCP-хостом (агентом) і серверами інструментів:
 
@@ -467,7 +462,7 @@ llmtest report runs/harmfulqa_ollama/results.jsonl.gz
 
 ```sh
 pip install -e ".[dev]"
-pip install -e ".[oberih]"           # PyYAML для політики (аліас: [sentinel])
+pip install -e ".[oberih]"           # PyYAML для політики
 pip install -e ".[oberih-all]"       # + embeddings + mcp
 
 llmtest guard-eval --dataset synthetic
@@ -478,7 +473,7 @@ llmtest agent-bench --provider openrouter \
 llmtest oberih-proxy -- -- your-mcp-server ...
 ```
 
-Архітектура: `llm_tester/sentinel` — самодостатній підпакет (імпорт також через `llm_tester.oberih`); оцінювання в `llm_tester/agent`. Формат трас: `docs/mcp-sentinel-trace-format.md` (спільний з mcp-security-research; назва схеми незмінна).  
+Архітектура: імпорт через `llm_tester.oberih`; оцінювання в `llm_tester.agent`. Формат трас: [`docs/oberih-trace-format.md`](docs/oberih-trace-format.md) (спільний з mcp-security-research).  
 Провайдери для S3/S4 та agent-bench: `ollama`, `openai`, `xai`, `openrouter` (`:free`), `groq`.  
 API: `check_tool_registration` / `on_tool_output` / `check_tool_call`.  
 Числа з `guard-eval` — **попередні вимірювання**, не заявлені результати.
